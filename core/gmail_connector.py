@@ -4,7 +4,10 @@
 """
 
 import base64
+import hashlib
 import os
+import secrets
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -73,15 +76,31 @@ class GmailConnector:
             }
         }
 
-    def get_auth_url(self, redirect_uri: str) -> str:
-        """Returns the Google OAuth consent URL. User opens this in their browser."""
-        import traceback
+    def get_auth_url(self, redirect_uri: str) -> tuple[str, str]:
+        """Returns (auth_url, code_verifier) using PKCE S256.
+
+        The code_verifier is embedded in the OAuth `state` param so it survives
+        the browser redirect (st.session_state does not persist across redirects).
+        The caller should also store it in st.session_state as a fallback.
+        """
         try:
+            # PKCE: generate verifier and derive challenge
+            code_verifier = secrets.token_urlsafe(96)
+            code_challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(code_verifier.encode("ascii")).digest()
+            ).rstrip(b"=").decode("ascii")
+
             flow = Flow.from_client_config(
                 self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
             )
-            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            return auth_url
+            auth_url, _ = flow.authorization_url(
+                prompt="consent",
+                access_type="offline",
+                code_challenge=code_challenge,
+                code_challenge_method="S256",
+                state=code_verifier,  # echoed back by Google as ?state=, survives redirect
+            )
+            return auth_url, code_verifier
         except Exception as e:
             raise RuntimeError(
                 f"get_auth_url failed | redirect_uri={redirect_uri!r} | "
@@ -89,15 +108,14 @@ class GmailConnector:
                 f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
             ) from e
 
-    def exchange_code(self, code: str, redirect_uri: str) -> tuple[bool, str]:
-        """Exchanges the OAuth code (from ?code= query param) for a token.
+    def exchange_code(self, code: str, redirect_uri: str, code_verifier: str) -> tuple[bool, str]:
+        """Exchanges the OAuth code for a token using PKCE.
         Returns (True, '') on success or (False, error_message) on failure."""
-        import traceback
         try:
             flow = Flow.from_client_config(
                 self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
             )
-            flow.fetch_token(code=code)
+            flow.fetch_token(code=code, code_verifier=code_verifier)
             creds = flow.credentials
             self.token_path.write_text(creds.to_json(), encoding="utf-8")
             self.service = build("gmail", "v1", credentials=creds)

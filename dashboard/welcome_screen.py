@@ -194,10 +194,19 @@ def render_welcome_screen() -> bool:
 
     # ── Step 2/3: handle Google's OAuth callback (?code=...) ────────────────
     if "code" in st.query_params:
+        # code_verifier is carried back in ?state= (survives the browser redirect).
+        # Fall back to session_state for same-session flows.
+        code_verifier = (
+            st.query_params.get("state")
+            or st.session_state.get("_pkce_code_verifier", "")
+        )
         with st.spinner("מחבר לגוגל..."):
-            success, err = connector.exchange_code(st.query_params["code"], redirect_uri)
+            success, err = connector.exchange_code(
+                st.query_params["code"], redirect_uri, code_verifier
+            )
         st.query_params.clear()
         if success:
+            st.session_state.pop("_pkce_code_verifier", None)
             st.success("מחובר בהצלחה! טוען את הדשבורד...")
             st.balloons()
             time.sleep(1.2)
@@ -224,7 +233,8 @@ def render_welcome_screen() -> bool:
         st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
         try:
-            auth_url = connector.get_auth_url(redirect_uri)
+            auth_url, code_verifier = connector.get_auth_url(redirect_uri)
+            st.session_state["_pkce_code_verifier"] = code_verifier
         except RuntimeError as _e:
             st.session_state["_oauth_error"] = str(_e)
             st.error(f"שגיאה בבניית כתובת האימות:\n\n```\n{_e}\n```")
