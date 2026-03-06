@@ -11,7 +11,7 @@ from typing import Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import Flow, InstalledAppFlow
 from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
@@ -60,6 +60,40 @@ class GmailConnector:
                 "token_uri": "https://oauth2.googleapis.com/token",
             }
         }
+
+    def _build_web_client_config(self) -> dict:
+        """Client config for web-based OAuth flow (required on Streamlit Cloud)."""
+        return {
+            "web": {
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "redirect_uris": [],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        }
+
+    def get_auth_url(self, redirect_uri: str) -> str:
+        """Returns the Google OAuth consent URL. User opens this in their browser."""
+        flow = Flow.from_client_config(
+            self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
+        )
+        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        return auth_url
+
+    def exchange_code(self, code: str, redirect_uri: str) -> bool:
+        """Exchanges the OAuth code (from ?code= query param) for a token. Returns True on success."""
+        try:
+            flow = Flow.from_client_config(
+                self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
+            )
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            self.token_path.write_text(creds.to_json(), encoding="utf-8")
+            self.service = build("gmail", "v1", credentials=creds)
+            return True
+        except Exception:
+            return False
 
     def authenticate(self) -> bool:
         """

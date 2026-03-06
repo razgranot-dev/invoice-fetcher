@@ -2,6 +2,7 @@
 מסך ברוכים הבאים — עיצוב SaaS כהה, כפתור אחד בלבד לחיבור Google.
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -178,9 +179,33 @@ def render_welcome_screen() -> bool:
     """
     מציג מסך ברוכים הבאים עם כפתור חיבור Google יחיד.
     מחזיר True אם החיבור הושלם בהצלחה.
+
+    Flow:
+      1. User clicks the link button → sent to Google consent screen.
+      2. Google redirects back to APP_URL?code=XXX.
+      3. Streamlit reruns; we exchange the code for a token here.
     """
+    from core.gmail_connector import GmailConnector
+
     _inject_welcome_css()
 
+    connector = GmailConnector()
+    redirect_uri = os.environ.get("APP_URL", "http://localhost:8501")
+
+    # ── Step 2/3: handle Google's OAuth callback (?code=...) ────────────────
+    if "code" in st.query_params:
+        with st.spinner("מחבר לגוגל..."):
+            success = connector.exchange_code(st.query_params["code"], redirect_uri)
+        st.query_params.clear()
+        if success:
+            st.success("מחובר בהצלחה! טוען את הדשבורד...")
+            st.balloons()
+            time.sleep(1.2)
+            return True
+        else:
+            st.error("החיבור נכשל. בדוק את ה-Client ID וה-Secret ונסה שוב.")
+
+    # ── Step 1: show connect button ──────────────────────────────────────────
     _, center, _ = st.columns([1, 2, 1])
 
     with center:
@@ -197,32 +222,9 @@ def render_welcome_screen() -> bool:
 
         st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
-        if "connecting" not in st.session_state:
-            st.session_state.connecting = False
-
-        if st.session_state.connecting:
-            with st.spinner("מתחבר לגוגל — בדוק את חלון הדפדפן שנפתח..."):
-                from core.gmail_connector import GmailConnector
-                success = GmailConnector().authenticate()
-
-            st.session_state.connecting = False
-
-            if success:
-                st.success("מחובר בהצלחה! טוען את הדשבורד...")
-                st.balloons()
-                time.sleep(1.2)
-                return True
-            else:
-                st.error(
-                    "החיבור נכשל. ודא שמשתני הסביבה "
-                    "`GID` ו-`GSECRET` "
-                    "מוגדרים נכון בקובץ `.env` ונסה שוב."
-                )
-
+        auth_url = connector.get_auth_url(redirect_uri)
         st.markdown('<div class="connect-btn-wrapper">', unsafe_allow_html=True)
-        if st.button("🔗  התחבר לחשבון Google", use_container_width=True, type="primary"):
-            st.session_state.connecting = True
-            st.rerun()
+        st.link_button("🔗  התחבר לחשבון Google", auth_url, use_container_width=True, type="primary")
         st.markdown("</div>", unsafe_allow_html=True)
 
         st.markdown(

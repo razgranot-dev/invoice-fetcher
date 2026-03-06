@@ -30,7 +30,7 @@ load_dotenv()
 
 # Bridge GID/GSECRET → GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.
 # Checks st.secrets first (Streamlit Cloud), then os.environ short names (local .env).
-for _src, _dst in (("GID", "GOOGLE_CLIENT_ID"), ("GSECRET", "GOOGLE_CLIENT_SECRET")):
+for _src, _dst in (("GID", "GOOGLE_CLIENT_ID"), ("GSECRET", "GOOGLE_CLIENT_SECRET"), ("APP_URL", "APP_URL")):
     # st.secrets always wins — Streamlit Cloud auto-injects secrets into os.environ
     # using the secret's own key name, so an old GOOGLE_CLIENT_ID secret would
     # already be in os.environ before this runs. Always overwrite with the short-name value.
