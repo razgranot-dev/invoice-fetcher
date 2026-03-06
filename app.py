@@ -31,14 +31,17 @@ load_dotenv()
 # Bridge GID/GSECRET → GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET.
 # Checks st.secrets first (Streamlit Cloud), then os.environ short names (local .env).
 for _src, _dst in (("GID", "GOOGLE_CLIENT_ID"), ("GSECRET", "GOOGLE_CLIENT_SECRET")):
-    if not os.environ.get(_dst):
-        try:
-            if _src in st.secrets:
-                os.environ[_dst] = st.secrets[_src]
-        except Exception:
-            pass
-        if not os.environ.get(_dst) and os.environ.get(_src):
-            os.environ[_dst] = os.environ[_src]
+    # st.secrets always wins — Streamlit Cloud auto-injects secrets into os.environ
+    # using the secret's own key name, so an old GOOGLE_CLIENT_ID secret would
+    # already be in os.environ before this runs. Always overwrite with the short-name value.
+    try:
+        if _src in st.secrets:
+            os.environ[_dst] = st.secrets[_src]
+    except Exception:
+        pass
+    # Fallback: if still not set, try the short name in os.environ (local .env)
+    if not os.environ.get(_dst) and os.environ.get(_src):
+        os.environ[_dst] = os.environ[_src]
 
 sys.path.insert(0, str(Path(__file__).parent))
 
