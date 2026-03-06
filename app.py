@@ -12,11 +12,19 @@
 import sys
 from pathlib import Path
 
+import os
+
 import streamlit as st
 from dotenv import load_dotenv
 
 # טעינת .env לפני כל דבר
 load_dotenv()
+
+# On Streamlit Cloud, secrets are in st.secrets rather than env vars.
+# Bridge them into os.environ so existing os.getenv() calls work unchanged.
+for _key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
+    if _key in st.secrets and not os.environ.get(_key):
+        os.environ[_key] = st.secrets[_key]
 
 sys.path.insert(0, str(Path(__file__).parent))
 
