@@ -21,7 +21,7 @@ TOKEN_FILE = "token.json"
 class GmailConnector:
     """
     מנהל חיבור ואימות מול Gmail API.
-    פרטי OAuth נטענים ממשתני הסביבה GOOGLE_CLIENT_ID ו-GOOGLE_CLIENT_SECRET.
+    פרטי OAuth נטענים ממשתני הסביבה GOOGLE_CLIENT_ID ו-GOOGLE_CLIENT_SECRET (ממופים מ-GID ו-GSECRET).
     הטוקן נשמר ומתרענן אוטומטית — המשתמש לא רואה שום קובץ.
     """
 
@@ -34,7 +34,7 @@ class GmailConnector:
     # ── בדיקות מצב ───────────────────────────────────────────────────
 
     def is_configured(self) -> bool:
-        """מחזיר True אם GOOGLE_CLIENT_ID ו-GOOGLE_CLIENT_SECRET הוגדרו."""
+        """מחזיר True אם GID ו-GSECRET הוגדרו."""
         return bool(self._client_id and self._client_secret)
 
     def is_authenticated(self) -> bool:

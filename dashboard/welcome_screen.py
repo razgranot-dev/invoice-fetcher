@@ -215,7 +215,7 @@ def render_welcome_screen() -> bool:
             else:
                 st.error(
                     "החיבור נכשל. ודא שמשתני הסביבה "
-                    "`GOOGLE_CLIENT_ID` ו-`GOOGLE_CLIENT_SECRET` "
+                    "`GID` ו-`GSECRET` "
                     "מוגדרים נכון בקובץ `.env` ונסה שוב."
                 )
 
@@ -239,7 +239,7 @@ def render_welcome_screen() -> bool:
 
 def render_not_configured_screen():
     """
-    מוצג כאשר GOOGLE_CLIENT_ID או GOOGLE_CLIENT_SECRET חסרים מ-.env.
+    מוצג כאשר GID או GSECRET חסרים מ-.env.
     """
     _inject_welcome_css()
 
@@ -265,8 +265,8 @@ def render_not_configured_screen():
             '<li>העתק את ה-Client ID וה-Client Secret לקובץ <span class="env-pill">.env</span>:</li>'
             '</ol>'
             '<div class="env-block">'
-            'GOOGLE_CLIENT_ID=<span style="color:#60A5FA;">your_client_id.apps.googleusercontent.com</span><br>'
-            'GOOGLE_CLIENT_SECRET=<span style="color:#34D399;">your_client_secret</span>'
+            'GID=<span style="color:#60A5FA;">your_client_id.apps.googleusercontent.com</span><br>'
+            'GSECRET=<span style="color:#34D399;">your_client_secret</span>'
             '</div>'
             '<p dir="rtl" style="color:#475569; font-size:0.82rem; margin-top:20px; text-align:center;">'
             'לאחר ההגדרה — הפעל מחדש את האפליקציה'

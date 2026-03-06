@@ -22,9 +22,9 @@ load_dotenv()
 
 # On Streamlit Cloud, secrets are in st.secrets rather than env vars.
 # Bridge them into os.environ so existing os.getenv() calls work unchanged.
-for _key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
-    if _key in st.secrets and not os.environ.get(_key):
-        os.environ[_key] = st.secrets[_key]
+for _src, _dst in (("GID", "GOOGLE_CLIENT_ID"), ("GSECRET", "GOOGLE_CLIENT_SECRET")):
+    if _src in st.secrets and not os.environ.get(_dst):
+        os.environ[_dst] = st.secrets[_src]
 
 sys.path.insert(0, str(Path(__file__).parent))
 
