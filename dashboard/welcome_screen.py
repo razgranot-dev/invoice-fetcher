@@ -195,7 +195,7 @@ def render_welcome_screen() -> bool:
     # ── Step 2/3: handle Google's OAuth callback (?code=...) ────────────────
     if "code" in st.query_params:
         with st.spinner("מחבר לגוגל..."):
-            success = connector.exchange_code(st.query_params["code"], redirect_uri)
+            success, err = connector.exchange_code(st.query_params["code"], redirect_uri)
         st.query_params.clear()
         if success:
             st.success("מחובר בהצלחה! טוען את הדשבורד...")
@@ -203,7 +203,8 @@ def render_welcome_screen() -> bool:
             time.sleep(1.2)
             return True
         else:
-            st.error("החיבור נכשל. בדוק את ה-Client ID וה-Secret ונסה שוב.")
+            st.session_state["_oauth_error"] = err
+            st.error(f"החיבור נכשל:\n\n```\n{err}\n```")
 
     # ── Step 1: show connect button ──────────────────────────────────────────
     _, center, _ = st.columns([1, 2, 1])
@@ -222,7 +223,13 @@ def render_welcome_screen() -> bool:
 
         st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 
-        auth_url = connector.get_auth_url(redirect_uri)
+        try:
+            auth_url = connector.get_auth_url(redirect_uri)
+        except RuntimeError as _e:
+            st.session_state["_oauth_error"] = str(_e)
+            st.error(f"שגיאה בבניית כתובת האימות:\n\n```\n{_e}\n```")
+            return False
+
         st.markdown('<div class="connect-btn-wrapper">', unsafe_allow_html=True)
         st.link_button("🔗  התחבר לחשבון Google", auth_url, use_container_width=True, type="primary")
         st.markdown("</div>", unsafe_allow_html=True)

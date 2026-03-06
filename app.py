@@ -66,22 +66,24 @@ for _key, _default in [("results", []), ("scan_done", False)]:
 # ── דיבאג: סודות ────────────────────────────────────────────────────────────
 with st.sidebar:
     with st.expander("🔧 Debug: Secrets", expanded=False):
+        st.caption(f"Deployed commit: `434b3ce`")
         for _dbg_short, _dbg_long in (("GID", "GOOGLE_CLIENT_ID"), ("GSECRET", "GOOGLE_CLIENT_SECRET")):
             st.markdown(f"**`{_dbg_short}`**")
-            # st.secrets
             try:
                 _in_secrets = _dbg_short in st.secrets
                 _secrets_len = len(st.secrets[_dbg_short]) if _in_secrets else 0
                 st.write(f"  st.secrets: {'✅' if _in_secrets else '❌'}" + (f" (len={_secrets_len})" if _in_secrets else ""))
             except Exception as _e:
                 st.write(f"  st.secrets: ⚠️ error — {_e}")
-            # os.environ short name
             _env_short = os.environ.get(_dbg_short)
             st.write(f"  os.environ[{_dbg_short!r}]: {'✅' if _env_short else '❌'}" + (f" (len={len(_env_short)})" if _env_short else ""))
-            # os.environ long name (what GmailConnector reads)
             _env_long = os.environ.get(_dbg_long)
             st.write(f"  os.environ[{_dbg_long!r}]: {'✅' if _env_long else '❌'}" + (f" (len={len(_env_long)})" if _env_long else ""))
             st.markdown("---")
+        _app_url = os.environ.get("APP_URL")
+        st.write(f"**`APP_URL`**: {'✅ ' + _app_url if _app_url else '❌ not set'}")
+        if st.session_state.get("_oauth_error"):
+            st.error(f"Last OAuth error:\n{st.session_state['_oauth_error']}")
 
 # ── זיהוי מצב ──────────────────────────────────────────────────────────────
 from core.gmail_connector import GmailConnector

@@ -75,14 +75,24 @@ class GmailConnector:
 
     def get_auth_url(self, redirect_uri: str) -> str:
         """Returns the Google OAuth consent URL. User opens this in their browser."""
-        flow = Flow.from_client_config(
-            self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
-        )
-        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-        return auth_url
+        import traceback
+        try:
+            flow = Flow.from_client_config(
+                self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
+            )
+            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+            return auth_url
+        except Exception as e:
+            raise RuntimeError(
+                f"get_auth_url failed | redirect_uri={redirect_uri!r} | "
+                f"client_id_set={bool(self._client_id)} | "
+                f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+            ) from e
 
-    def exchange_code(self, code: str, redirect_uri: str) -> bool:
-        """Exchanges the OAuth code (from ?code= query param) for a token. Returns True on success."""
+    def exchange_code(self, code: str, redirect_uri: str) -> tuple[bool, str]:
+        """Exchanges the OAuth code (from ?code= query param) for a token.
+        Returns (True, '') on success or (False, error_message) on failure."""
+        import traceback
         try:
             flow = Flow.from_client_config(
                 self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
@@ -91,9 +101,9 @@ class GmailConnector:
             creds = flow.credentials
             self.token_path.write_text(creds.to_json(), encoding="utf-8")
             self.service = build("gmail", "v1", credentials=creds)
-            return True
-        except Exception:
-            return False
+            return True, ""
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
     def authenticate(self) -> bool:
         """
