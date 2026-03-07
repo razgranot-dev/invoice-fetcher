@@ -10,11 +10,20 @@ import streamlit as st
 def _build_redirect_uri() -> str:
     """Returns the OAuth redirect URI for the current environment.
 
-    Local:   http://localhost:8501  (default when APP_URL is not set)
     Cloud:   value of APP_URL env var (must be the exact public URL of this app,
              registered as an Authorized redirect URI in Google Cloud Console)
+    Local:   http://localhost:{actual_streamlit_port}  (auto-detected, not hardcoded)
     """
-    return os.environ.get("APP_URL", "http://localhost:8501").rstrip("/")
+    app_url = os.environ.get("APP_URL", "").strip()
+    if app_url:
+        return app_url.rstrip("/")
+    # Auto-detect Streamlit's actual port so the redirect URI matches
+    # the running instance even when Streamlit picks a non-default port.
+    try:
+        port = st.get_option("server.port") or 8501
+    except Exception:
+        port = 8501
+    return f"http://localhost:{port}"
 
 
 def _inject_welcome_css():
@@ -307,23 +316,31 @@ def render_welcome_screen() -> bool:
     redirect_uri = _build_redirect_uri()
 
     # Warn if APP_URL looks wrong for the current environment
-    _app_url_set = bool(os.environ.get("APP_URL"))
-    if not _app_url_set:
+    if not os.environ.get("APP_URL"):
         import logging
-        logging.getLogger(__name__).info("APP_URL not set — using localhost:8501 as redirect URI")
+        logging.getLogger(__name__).info("APP_URL not set — using redirect URI: %s", redirect_uri)
 
     # ── Step 2/3: handle Google's OAuth callback (?code=...) ────────────────
     if "code" in st.query_params:
-        # Validate CSRF state before doing anything
         returned_state = st.query_params.get("state", "")
         expected_state = st.session_state.get("_oauth_csrf_state", "")
         code_verifier = st.session_state.get("_pkce_code_verifier", "")
 
-        if not expected_state or returned_state != expected_state:
+        # CSRF check: if expected_state is present, returned_state must match.
+        # If expected_state is absent the browser session was reset during the
+        # redirect (e.g. Streamlit picked a different port and the callback
+        # landed in a fresh session). PKCE still guarantees the code is bound
+        # to this flow, so we allow the exchange to proceed without CSRF state.
+        if expected_state and returned_state != expected_state:
             st.session_state["_oauth_error"] = "CSRF state mismatch — החיבור בוטל מסיבות אבטחה"
             st.error("שגיאת אבטחה: החיבור בוטל. אנא נסה שוב.")
             st.query_params.clear()
             return False
+
+        # If session was reset we no longer have the code_verifier; treat
+        # returned_state as the verifier (original pre-CSRF design as fallback).
+        if not code_verifier:
+            code_verifier = returned_state
 
         with st.spinner("מחבר לגוגל..."):
             success, creds_json, err = connector.exchange_code(

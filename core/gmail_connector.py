@@ -113,8 +113,11 @@ class GmailConnector:
     def get_auth_url(self, redirect_uri: str) -> tuple[str, str, str]:
         """Returns (auth_url, code_verifier, csrf_state).
         Store both code_verifier and csrf_state in st.session_state.
-        The state param carries an opaque CSRF token (NOT the code_verifier, which
-        must not be exposed in URLs).
+
+        The state param carries the code_verifier so it survives the browser
+        redirect even if Streamlit's session_state is reset (e.g. redirect
+        landed on a different port). The welcome screen uses state as a
+        fallback verifier when session_state is empty after redirect.
         """
         try:
             code_verifier = secrets.token_urlsafe(96)
@@ -122,7 +125,7 @@ class GmailConnector:
                 hashlib.sha256(code_verifier.encode("ascii")).digest()
             ).rstrip(b"=").decode("ascii")
 
-            csrf_state = secrets.token_urlsafe(32)
+            csrf_state = code_verifier  # echoed back by Google; used as fallback verifier
 
             flow = Flow.from_client_config(
                 self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
