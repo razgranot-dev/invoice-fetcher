@@ -5,20 +5,19 @@
 
 import base64
 import hashlib
+import json
 import os
 import secrets
 import traceback
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow, InstalledAppFlow
+from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-TOKEN_FILE = "token.json"
 
 
 class GmailConnector:
@@ -29,7 +28,6 @@ class GmailConnector:
     """
 
     def __init__(self):
-        self.token_path = Path(TOKEN_FILE)
         self.service: Any = None
         self._client_id = os.getenv("GOOGLE_CLIENT_ID")
         self._client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -40,32 +38,25 @@ class GmailConnector:
         """מחזיר True אם GID ו-GSECRET הוגדרו."""
         return bool(self._client_id and self._client_secret)
 
-    def is_authenticated(self) -> bool:
-        """מחזיר True אם קיים טוקן תקין או כזה שניתן לרענן."""
-        if not self.token_path.exists():
+    def is_authenticated(self, creds_json: str | None = None) -> bool:
+        """Returns True if creds_json contains valid or refreshable credentials."""
+        if not creds_json:
             return False
         try:
-            creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
+            creds = Credentials.from_authorized_user_info(
+                json.loads(creds_json), SCOPES
+            )
             return creds.valid or (creds.expired and bool(creds.refresh_token))
         except Exception:
             return False
 
     # ── אימות ────────────────────────────────────────────────────────
 
-    def _build_client_config(self) -> dict:
-        """בונה dict הגדרות OAuth2 ממשתני הסביבה."""
-        return {
-            "installed": {
-                "client_id": self._client_id,
-                "client_secret": self._client_secret,
-                "redirect_uris": ["http://localhost", "urn:ietf:wg:oauth:2.0:oob"],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }
-        }
-
     def _build_web_client_config(self) -> dict:
-        """Client config for web-based OAuth flow (required on Streamlit Cloud)."""
+        """Client config for web-based OAuth flow.
+        NOTE: The redirect URI used at runtime must be registered in Google Cloud Console
+        under OAuth 2.0 Client → Authorized redirect URIs, otherwise Google will reject it.
+        """
         return {
             "web": {
                 "client_id": self._client_id,
@@ -76,19 +67,19 @@ class GmailConnector:
             }
         }
 
-    def get_auth_url(self, redirect_uri: str) -> tuple[str, str]:
-        """Returns (auth_url, code_verifier) using PKCE S256.
-
-        The code_verifier is embedded in the OAuth `state` param so it survives
-        the browser redirect (st.session_state does not persist across redirects).
-        The caller should also store it in st.session_state as a fallback.
+    def get_auth_url(self, redirect_uri: str) -> tuple[str, str, str]:
+        """Returns (auth_url, code_verifier, csrf_state).
+        Store both code_verifier and csrf_state in st.session_state.
+        The state param carries an opaque CSRF token (NOT the code_verifier, which
+        must not be exposed in URLs).
         """
         try:
-            # PKCE: generate verifier and derive challenge
             code_verifier = secrets.token_urlsafe(96)
             code_challenge = base64.urlsafe_b64encode(
                 hashlib.sha256(code_verifier.encode("ascii")).digest()
             ).rstrip(b"=").decode("ascii")
+
+            csrf_state = secrets.token_urlsafe(32)
 
             flow = Flow.from_client_config(
                 self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
@@ -98,9 +89,9 @@ class GmailConnector:
                 access_type="offline",
                 code_challenge=code_challenge,
                 code_challenge_method="S256",
-                state=code_verifier,  # echoed back by Google as ?state=, survives redirect
+                state=csrf_state,
             )
-            return auth_url, code_verifier
+            return auth_url, code_verifier, csrf_state
         except Exception as e:
             raise RuntimeError(
                 f"get_auth_url failed | redirect_uri={redirect_uri!r} | "
@@ -108,58 +99,40 @@ class GmailConnector:
                 f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
             ) from e
 
-    def exchange_code(self, code: str, redirect_uri: str, code_verifier: str) -> tuple[bool, str]:
-        """Exchanges the OAuth code for a token using PKCE.
-        Returns (True, '') on success or (False, error_message) on failure."""
+    def exchange_code(self, code: str, redirect_uri: str, code_verifier: str) -> tuple[bool, str, str]:
+        """Exchange OAuth code for token. Returns (success, creds_json, error_message).
+        On success, creds_json is a JSON string to store in st.session_state["_creds_json"].
+        On failure, creds_json is '' and error_message describes the problem.
+        """
         try:
             flow = Flow.from_client_config(
                 self._build_web_client_config(), scopes=SCOPES, redirect_uri=redirect_uri
             )
             flow.fetch_token(code=code, code_verifier=code_verifier)
             creds = flow.credentials
-            self.token_path.write_text(creds.to_json(), encoding="utf-8")
-            self.service = build("gmail", "v1", credentials=creds)
-            return True, ""
+            return True, creds.to_json(), ""
         except Exception as e:
-            return False, f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+            return False, "", f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
-    def authenticate(self) -> bool:
-        """
-        מבצע אימות OAuth2:
-        1. טוען טוקן קיים
-        2. מרענן אם פג תוקפו
-        3. פותח דפדפן לאימות אם אין טוקן
-        4. שומר את הטוקן ובונה את שירות Gmail
-        מחזיר True בהצלחה, False בכישלון.
+    def build_service_from_json(self, creds_json: str) -> tuple[bool, str]:
+        """Load credentials from JSON string, refresh if needed, build Gmail service.
+        Returns (success, updated_creds_json).
+        updated_creds_json may differ from input if the token was refreshed — caller
+        should persist it back to st.session_state["_creds_json"].
         """
         try:
-            creds = None
-
-            if self.token_path.exists():
-                creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
-
-            if creds and creds.expired and creds.refresh_token:
+            creds = Credentials.from_authorized_user_info(
+                json.loads(creds_json), SCOPES
+            )
+            if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-            elif not creds or not creds.valid:
-                if not self.is_configured():
-                    return False
-                flow = InstalledAppFlow.from_client_config(
-                    self._build_client_config(), SCOPES
-                )
-                creds = flow.run_local_server(port=0, prompt="consent")
-
-            # שמירת הטוקן לשימוש עתידי
-            self.token_path.write_text(creds.to_json(), encoding="utf-8")
             self.service = build("gmail", "v1", credentials=creds)
-            return True
-
-        except Exception:
-            return False
+            return True, creds.to_json()
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
 
     def revoke_token(self) -> bool:
-        """מוחק את token.json ומנתק את הגישה."""
-        if self.token_path.exists():
-            self.token_path.unlink()
+        """Clears the in-memory service. Caller must clear st.session_state['_creds_json']."""
         self.service = None
         return True
 
