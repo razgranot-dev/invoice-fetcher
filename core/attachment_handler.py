@@ -23,6 +23,8 @@ _SUPPORTED_TYPES = {
 
 _SAFE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25 MB
+
 
 class AttachmentHandler:
     """
@@ -57,12 +59,27 @@ class AttachmentHandler:
             logger.warning("קובץ '%s' ריק — מדלג", filename)
             return None
 
+        if len(data) > _MAX_ATTACHMENT_BYTES:
+            logger.warning(
+                "קובץ '%s' גדול מדי (%d בייטים) — מדלג", filename, len(data)
+            )
+            return None
+
         # חישוב תיקיית היעד לפי שנה/חודש
         target_dir = self._resolve_target_dir(date_str)
         target_dir.mkdir(parents=True, exist_ok=True)
 
         safe_name = self._sanitize_filename(filename)
         dest = self._unique_path(target_dir / safe_name)
+
+        # Safety: ensure the resolved path stays inside base_dir (prevents path traversal)
+        try:
+            dest.resolve().relative_to(self.base_dir.resolve())
+        except ValueError:
+            logger.error(
+                "ניסיון path traversal זוהה בקובץ '%s' — מדלג", filename
+            )
+            return None
 
         try:
             dest.write_bytes(data)
