@@ -2,14 +2,11 @@
 טיפול בקבצים מצורפים — הורדה ושמירה לתיקיות מאורגנות לפי שנה/חודש.
 """
 
-import os
 import re
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

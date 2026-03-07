@@ -577,7 +577,7 @@ def render_sidebar() -> dict:
         st.markdown("</div>", unsafe_allow_html=True)
 
     keywords = [k.strip() for k in keywords_raw.splitlines() if k.strip()]
-    return {"days_back": days_back, "keywords": keywords, "unread_only": unread_only, "start_scan": start_scan}
+    return {"days_back": days_back, "keywords": keywords, "unread_only": unread_only, "start_scan": start_scan, "output_dir": "output"}
 
 
 def render_header():

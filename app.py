@@ -86,6 +86,8 @@ with st.sidebar:
     st.markdown('<div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:16px;"></div>', unsafe_allow_html=True)
     if st.button("🔓 התנתק מ-Gmail", use_container_width=True):
         st.session_state.pop("_creds_json", None)
+        st.session_state.pop("_pkce_code_verifier", None)
+        st.session_state.pop("_oauth_csrf_state", None)
         st.session_state.results = []
         st.session_state.scan_done = False
         st.rerun()
