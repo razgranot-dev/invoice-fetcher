@@ -7,6 +7,16 @@ import os
 import streamlit as st
 
 
+def _build_redirect_uri() -> str:
+    """Returns the OAuth redirect URI for the current environment.
+
+    Local:   http://localhost:8501  (default when APP_URL is not set)
+    Cloud:   value of APP_URL env var (must be the exact public URL of this app,
+             registered as an Authorized redirect URI in Google Cloud Console)
+    """
+    return os.environ.get("APP_URL", "http://localhost:8501").rstrip("/")
+
+
 def _inject_welcome_css():
     st.markdown("""
     <style>
@@ -294,7 +304,13 @@ def render_welcome_screen() -> bool:
     _inject_welcome_css()
 
     connector = GmailConnector()
-    redirect_uri = os.environ.get("APP_URL", "http://localhost:8501")
+    redirect_uri = _build_redirect_uri()
+
+    # Warn if APP_URL looks wrong for the current environment
+    _app_url_set = bool(os.environ.get("APP_URL"))
+    if not _app_url_set:
+        import logging
+        logging.getLogger(__name__).info("APP_URL not set — using localhost:8501 as redirect URI")
 
     # ── Step 2/3: handle Google's OAuth callback (?code=...) ────────────────
     if "code" in st.query_params:
@@ -323,7 +339,15 @@ def render_welcome_screen() -> bool:
             return True
         else:
             st.session_state["_oauth_error"] = err
-            st.error(f"החיבור נכשל:\n\n```\n{err}\n```")
+            if "redirect_uri_mismatch" in err.lower() or "redirect_uri" in err.lower():
+                st.error(
+                    "❌ שגיאת הגדרת OAuth: כתובת ה-redirect URI אינה תואמת.\n\n"
+                    f"כתובת בשימוש: `{redirect_uri}`\n\n"
+                    "ודא שכתובת זו רשומה ב-Google Cloud Console תחת "
+                    "**OAuth 2.0 Client → Authorized redirect URIs**."
+                )
+            else:
+                st.error(f"החיבור נכשל:\n\n```\n{err}\n```")
 
     # ── Step 1: show connect button ──────────────────────────────────────────
     _, center, _ = st.columns([1, 2, 1])
@@ -352,6 +376,7 @@ def render_welcome_screen() -> bool:
         except RuntimeError as _e:
             st.session_state["_oauth_error"] = str(_e)
             st.error(f"שגיאה בבניית כתובת האימות:\n\n```\n{_e}\n```")
+            st.info(f"כתובת redirect URI בשימוש: `{redirect_uri}`")
             return False
 
         st.markdown('<div class="connect-btn-wrapper">', unsafe_allow_html=True)

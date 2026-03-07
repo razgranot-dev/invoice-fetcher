@@ -103,6 +103,7 @@ class GmailConnector:
         """Exchange OAuth code for token. Returns (success, creds_json, error_message).
         On success, creds_json is a JSON string to store in st.session_state["_creds_json"].
         On failure, creds_json is '' and error_message describes the problem.
+        On redirect_uri_mismatch: error_message will contain 'redirect_uri_mismatch'.
         """
         try:
             flow = Flow.from_client_config(
