@@ -6,6 +6,7 @@
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import traceback
@@ -17,10 +18,44 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
+_log = logging.getLogger(__name__)
+
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    """Returns True if the exception indicates an auth failure that requires re-login.
+
+    Auth errors: token revoked, expired, invalid_grant, 401 Unauthorized.
+    These cannot be recovered by retrying — the user must re-authenticate.
+    """
+    try:
+        from google.auth.exceptions import RefreshError
+        if isinstance(exc, RefreshError):
+            return True
+    except ImportError:
+        pass
+    try:
+        from googleapiclient.errors import HttpError
+        if isinstance(exc, HttpError) and exc.resp.status == 401:
+            return True
+    except (ImportError, AttributeError):
+        pass
+    msg = str(exc).lower()
+    return any(
+        sig in msg for sig in (
+            "invalid_grant",
+            "token has been expired",
+            "token has been revoked",
+            "invalid_client",
+            "unauthorized_client",
+            "access_denied",
+        )
+    )
+
+
 class GmailConnector:
+    AUTH_ERROR_PREFIX = "AUTH_ERROR:"
     """
     מנהל חיבור ואימות מול Gmail API.
     פרטי OAuth נטענים ממשתני הסביבה GOOGLE_CLIENT_ID ו-GOOGLE_CLIENT_SECRET (ממופים מ-GID ו-GSECRET).
@@ -117,9 +152,10 @@ class GmailConnector:
 
     def build_service_from_json(self, creds_json: str) -> tuple[bool, str]:
         """Load credentials from JSON string, refresh if needed, build Gmail service.
-        Returns (success, updated_creds_json).
-        updated_creds_json may differ from input if the token was refreshed — caller
-        should persist it back to st.session_state["_creds_json"].
+        Returns (success, result):
+          - Success:     (True, updated_creds_json)  — caller persists back to session_state
+          - Auth error:  (False, "AUTH_ERROR: ...")  — caller must clear session + prompt re-login
+          - Other error: (False, "ErrorType: msg")   — transient / config issue
         """
         try:
             creds = Credentials.from_authorized_user_info(
@@ -130,6 +166,10 @@ class GmailConnector:
             self.service = build("gmail", "v1", credentials=creds)
             return True, creds.to_json()
         except Exception as e:
+            if _is_auth_error(e):
+                _log.warning("Gmail auth error (token revoked/expired): %s", e)
+                return False, f"{GmailConnector.AUTH_ERROR_PREFIX} {type(e).__name__}: {e}"
+            _log.warning("Gmail service init error: %s", e)
             return False, f"{type(e).__name__}: {e}"
 
     def revoke_token(self) -> bool:

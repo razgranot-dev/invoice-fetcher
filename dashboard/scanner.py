@@ -36,6 +36,13 @@ def run_email_scan(params: dict) -> list[dict]:
 
     ok, updated_creds_json = connector.build_service_from_json(creds_json)
     if not ok:
+        if updated_creds_json.startswith(GmailConnector.AUTH_ERROR_PREFIX):
+            # Token revoked or expired — clear auth state and ask user to reconnect
+            for _key in ("_creds_json", "_pkce_code_verifier", "_oauth_csrf_state"):
+                st.session_state.pop(_key, None)
+            st.error("🔒 פג תוקף הגישה ל-Gmail או שהיא בוטלה.")
+            st.info("אנא לחץ על 'התנתק מ-Gmail' בסרגל הצד והתחבר מחדש.")
+            return []
         st.error(f"שגיאה: לא ניתן לאתחל את שירות Gmail: {updated_creds_json}")
         return []
 
