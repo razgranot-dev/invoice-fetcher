@@ -69,8 +69,7 @@ if not _connector.is_configured():
     st.stop()
 
 # ══ מצב 2: לא מחובר — מסך ברוכים הבאים ════════════════════════════════════
-_creds_json = st.session_state.get("_creds_json", "")
-if not _connector.is_authenticated(_creds_json):
+if not _connector.is_authenticated():
     connected = render_welcome_screen()
     if connected:
         st.rerun()

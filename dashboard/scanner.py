@@ -30,7 +30,7 @@ def run_email_scan(params: dict) -> list[dict]:
     # בדיקת אימות לפני כל דבר
     creds_json = st.session_state.get("_creds_json", "")
     connector = GmailConnector()
-    if not connector.is_authenticated(creds_json):
+    if not connector.is_authenticated():
         st.error("שגיאה: פג תוקף החיבור. אנא התנתק והתחבר מחדש.")
         return []
 

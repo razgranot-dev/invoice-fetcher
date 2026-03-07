@@ -79,8 +79,10 @@ class GmailConnector:
         """מחזיר True אם GID ו-GSECRET הוגדרו."""
         return bool(self._client_id and self._client_secret)
 
-    def is_authenticated(self, creds_json: str | None = None) -> bool:
-        """Returns True if creds_json contains valid or refreshable credentials."""
+    def is_authenticated(self) -> bool:
+        """Returns True if st.session_state contains valid or refreshable credentials."""
+        import streamlit as st
+        creds_json = st.session_state.get("_creds_json", "")
         if not creds_json:
             return False
         try:
