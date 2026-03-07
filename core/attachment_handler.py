@@ -67,8 +67,6 @@ class AttachmentHandler:
 
         # חישוב תיקיית היעד לפי שנה/חודש
         target_dir = self._resolve_target_dir(date_str)
-        target_dir.mkdir(parents=True, exist_ok=True)
-
         safe_name = self._sanitize_filename(filename)
         dest = self._unique_path(target_dir / safe_name)
 
@@ -80,6 +78,8 @@ class AttachmentHandler:
                 "ניסיון path traversal זוהה בקובץ '%s' — מדלג", filename
             )
             return None
+
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             dest.write_bytes(data)
