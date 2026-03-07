@@ -3,12 +3,8 @@
 """
 
 import os
-import sys
-from pathlib import Path
 
 import streamlit as st
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.attachment_handler import AttachmentHandler
 from core.body_parser import BodyParser
@@ -32,15 +28,19 @@ def run_email_scan(params: dict) -> list[dict]:
     results: list[dict] = []
 
     # בדיקת אימות לפני כל דבר
+    creds_json = st.session_state.get("_creds_json", "")
     connector = GmailConnector()
-    if not connector.is_authenticated():
-        st.error("שגיאה: לא מחובר לחשבון Gmail. עבור להגדרות ובצע אימות מחדש.")
+    if not connector.is_authenticated(creds_json):
+        st.error("שגיאה: פג תוקף החיבור. אנא התנתק והתחבר מחדש.")
         return []
 
-    # בניית שירות (טוען טוקן / מרענן)
-    if not connector.authenticate():
-        st.error("שגיאה: לא ניתן לאתחל את שירות Gmail. ודא שהאישורים תקינים.")
+    ok, updated_creds_json = connector.build_service_from_json(creds_json)
+    if not ok:
+        st.error(f"שגיאה: לא ניתן לאתחל את שירות Gmail: {updated_creds_json}")
         return []
+
+    # Persist refreshed token back to session (token may have been refreshed)
+    st.session_state["_creds_json"] = updated_creds_json
 
     try:
         with st.status("סורק את תיבת Gmail...", expanded=True) as scan_status:
