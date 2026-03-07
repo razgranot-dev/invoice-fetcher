@@ -2,6 +2,7 @@
 טיפול בקבצים מצורפים — הורדה ושמירה לתיקיות מאורגנות לפי שנה/חודש.
 """
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -64,8 +65,20 @@ class AttachmentHandler:
 
         # חישוב תיקיית היעד לפי שנה/חודש
         target_dir = self._resolve_target_dir(date_str)
-        safe_name = self._sanitize_filename(filename)
-        dest = self._unique_path(target_dir / safe_name)
+
+        # Build a deterministic filename using message/attachment IDs as prefix
+        _stem, _ext = os.path.splitext(filename)
+        _safe_stem = self._sanitize_filename(_stem)
+        safe_name = self._sanitize_filename(
+            self._make_deterministic_name(attachment, _safe_stem, _ext)
+        )
+        dest = target_dir / safe_name
+
+        # Idempotency: if this exact deterministic filename already exists,
+        # the attachment was already saved in a previous scan — return it.
+        if dest.exists():
+            logger.info("קובץ '%s' כבר קיים מסריקה קודמת — מדלג שמירה", dest.name)
+            return str(dest)
 
         # Safety: ensure the resolved path stays inside base_dir (prevents path traversal)
         try:
@@ -94,6 +107,30 @@ class AttachmentHandler:
         return content_type.lower().split(";")[0].strip() in _SUPPORTED_TYPES
 
     # ── עזר פנימי ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_deterministic_name(attachment: dict, sanitized_stem: str, ext: str) -> str:
+        """Build a deterministic filename using msg_id + attachment_id as prefix.
+
+        Using message/attachment IDs ensures the same attachment always maps to
+        the same filename (idempotent re-scans) and prevents collisions between
+        attachments with the same original name from different messages.
+
+        Format: {msg_id[:10]}_{att_id[:8]}_{original_stem}{ext}
+        Falls back to the sanitized original name if no IDs are available.
+        """
+        msg_id = (attachment.get("msg_id") or "").strip()
+        att_id = (attachment.get("attachment_id") or "").strip()
+
+        id_prefix = ""
+        if msg_id:
+            id_prefix += msg_id[:10]
+        if att_id:
+            id_prefix += f"_{att_id[:8]}"
+
+        if id_prefix:
+            return f"{id_prefix}_{sanitized_stem}{ext}" if sanitized_stem else f"{id_prefix}{ext or '.bin'}"
+        return f"{sanitized_stem}{ext}" if sanitized_stem else f"attachment{ext or '.bin'}"
 
     def _resolve_target_dir(self, date_str: str) -> Path:
         """מחשב תת-תיקייה YYYY/MM מתוך מחרוזת תאריך."""
