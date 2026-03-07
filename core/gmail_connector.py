@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import secrets
+import time
 import traceback
 from datetime import datetime, timedelta
 from typing import Any
@@ -19,6 +20,11 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
 _log = logging.getLogger(__name__)
+
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_RETRIES = 3
+_RETRY_BASE_DELAY = 1.0  # seconds; doubled each attempt
+_MAX_MESSAGES = 2000     # upper bound on messages fetched per scan
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
@@ -179,6 +185,32 @@ class GmailConnector:
 
     # ── בנייה ושליפה ─────────────────────────────────────────────────
 
+    def _exec(self, request) -> dict:
+        """Execute a Google API request object with exponential backoff retry.
+
+        Retries on transient HTTP errors (429, 500-504). Does NOT retry auth
+        errors (401) — those are surfaced immediately so the caller can clear
+        the session and prompt re-login.
+        """
+        from googleapiclient.errors import HttpError
+
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                return request.execute()
+            except HttpError as exc:
+                status = int(exc.resp.status)
+                if status == 401:
+                    raise  # auth error — propagate immediately, no retry
+                if status in _TRANSIENT_STATUS_CODES and attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                    _log.warning(
+                        "Gmail API HTTP %d — retry %d/%d in %.1fs",
+                        status, attempt + 1, _MAX_RETRIES, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise  # non-retryable or exhausted retries
+
     def build_query(self, keywords: list[str], days_back: int, unread_only: bool) -> str:
         """בונה שאילתת חיפוש Gmail לפי מילות מפתח, טווח ימים וסינון לא-נקרא."""
         parts = []
@@ -197,26 +229,37 @@ class GmailConnector:
         days_back: int = 30,
         unread_only: bool = True,
     ) -> list[str]:
-        """מחזיר רשימת מזהי הודעות התואמות לשאילתה, כולל דפדוף."""
+        """Returns matching message IDs. Caps at _MAX_MESSAGES to prevent unbounded scans."""
         query = self.build_query(keywords, days_back, unread_only)
         ids: list[str] = []
         page_token = None
+
         while True:
             params: dict = {"userId": "me", "q": query, "maxResults": 500}
             if page_token:
                 params["pageToken"] = page_token
-            resp = self.service.users().messages().list(**params).execute()
+
+            resp = self._exec(self.service.users().messages().list(**params))
             ids.extend(m["id"] for m in resp.get("messages", []))
+
+            if len(ids) >= _MAX_MESSAGES:
+                _log.warning(
+                    "Message cap reached (%d). Stopping pagination early.", _MAX_MESSAGES
+                )
+                ids = ids[:_MAX_MESSAGES]
+                break
+
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
+
         return ids
 
     def get_message(self, msg_id: str) -> dict:
         """שולף הודעה מלאה מ-Gmail."""
-        return self.service.users().messages().get(
-            userId="me", id=msg_id, format="full"
-        ).execute()
+        return self._exec(
+            self.service.users().messages().get(userId="me", id=msg_id, format="full")
+        )
 
     def parse_message(self, msg: dict) -> dict:
         """ממיר הודעת Gmail API למילון מובנה."""
@@ -275,9 +318,11 @@ class GmailConnector:
     def fetch_attachment_data(self, msg_id: str, attachment_id: str) -> bytes:
         """שולף bytes של קובץ מצורף מ-Gmail."""
         try:
-            resp = self.service.users().messages().attachments().get(
-                userId="me", messageId=msg_id, id=attachment_id
-            ).execute()
+            resp = self._exec(
+                self.service.users().messages().attachments().get(
+                    userId="me", messageId=msg_id, id=attachment_id
+                )
+            )
             return base64.urlsafe_b64decode(resp.get("data", "") + "==")
         except Exception:
             return b""
