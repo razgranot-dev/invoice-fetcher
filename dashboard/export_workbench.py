@@ -12,6 +12,18 @@ from core.screenshot_renderer import render_selected_to_zip
 from core.word_exporter import create_invoice_report
 
 
+def _sanitize_str(s: object) -> object:
+    """Strip surrogate characters that break pyarrow/Streamlit serialization."""
+    if not isinstance(s, str):
+        return s
+    return s.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
+def _sanitize_dict(d: dict) -> dict:
+    """Sanitize all string values in a dict."""
+    return {k: _sanitize_str(v) for k, v in d.items()}
+
+
 def _init_export_state():
     """Initialize export-related session state keys."""
     if "enriched_results" not in st.session_state:
@@ -26,14 +38,14 @@ def _build_dataframe(enriched: list[dict]) -> pd.DataFrame:
     for r in enriched:
         rows.append({
             "\u05e0\u05d1\u05d7\u05e8": True,
-            "\u05ea\u05d0\u05e8\u05d9\u05da": r.get("date", "")[:16] if r.get("date") else "",
-            "\u05e9\u05d5\u05dc\u05d7 / \u05ea\u05d9\u05d0\u05d5\u05e8": r.get("description", ""),
+            "\u05ea\u05d0\u05e8\u05d9\u05da": _sanitize_str(r.get("date", "")[:16] if r.get("date") else ""),
+            "\u05e9\u05d5\u05dc\u05d7 / \u05ea\u05d9\u05d0\u05d5\u05e8": _sanitize_str(r.get("description", "")),
             "\u05e1\u05db\u05d5\u05dd": r.get("amount"),
-            "\u05de\u05d8\u05d1\u05e2": r.get("currency", "\u20aa"),
+            "\u05de\u05d8\u05d1\u05e2": _sanitize_str(r.get("currency", "\u20aa")),
             "\u05e1\u05d8\u05d8\u05d5\u05e1": "\ud83d\udcce \u05e7\u05d5\u05d1\u05e5 \u05de\u05e6\u05d5\u05e8\u05e3" if r.get("saved_path") or r.get("attachments") else "\u05dc\u05dc\u05d0 \u05e7\u05d5\u05d1\u05e5",
-            "\u05d4\u05e2\u05e8\u05d5\u05ea": r.get("notes", ""),
-            "\u05d1\u05d9\u05d8\u05d7\u05d5\u05df": r.get("confidence", "low"),
-            "_uid": r.get("uid", ""),
+            "\u05d4\u05e2\u05e8\u05d5\u05ea": _sanitize_str(r.get("notes", "")),
+            "\u05d1\u05d9\u05d8\u05d7\u05d5\u05df": _sanitize_str(r.get("confidence", "low")),
+            "_uid": _sanitize_str(r.get("uid", "")),
         })
     return pd.DataFrame(rows)
 
@@ -43,10 +55,10 @@ def _get_selected_rows(edited_df: pd.DataFrame, enriched: list[dict]) -> list[di
     selected = []
     for idx, row in edited_df.iterrows():
         if row.get("\u05e0\u05d1\u05d7\u05e8", False) and idx < len(enriched):
-            result = {**enriched[idx]}
-            result["description"] = row.get("\u05e9\u05d5\u05dc\u05d7 / \u05ea\u05d9\u05d0\u05d5\u05e8", result.get("description", ""))
+            result = _sanitize_dict(enriched[idx])
+            result["description"] = _sanitize_str(row.get("\u05e9\u05d5\u05dc\u05d7 / \u05ea\u05d9\u05d0\u05d5\u05e8", result.get("description", "")))
             result["amount"] = row.get("\u05e1\u05db\u05d5\u05dd", result.get("amount"))
-            result["notes"] = row.get("\u05d4\u05e2\u05e8\u05d5\u05ea", result.get("notes", ""))
+            result["notes"] = _sanitize_str(row.get("\u05d4\u05e2\u05e8\u05d5\u05ea", result.get("notes", "")))
             selected.append(result)
     return selected
 
@@ -57,7 +69,9 @@ def render_export_workbench(results: list[dict]):
 
     # Enrich results with amounts (only once per scan)
     if not st.session_state["enriched_results"] or len(st.session_state["enriched_results"]) != len(results):
-        st.session_state["enriched_results"] = enrich_results(results)
+        st.session_state["enriched_results"] = [
+            _sanitize_dict(r) for r in enrich_results(results)
+        ]
 
     enriched = st.session_state["enriched_results"]
 
@@ -91,12 +105,6 @@ def render_export_workbench(results: list[dict]):
         "\u05d1\u05d9\u05d8\u05d7\u05d5\u05df": st.column_config.TextColumn("\u05d1\u05d9\u05d8\u05d7\u05d5\u05df", width="small", disabled=True),
         "_uid": None,
     }
-
-    # Sanitize string columns — strip surrogate characters that break pyarrow
-    for col in df.select_dtypes(include="object").columns:
-        df[col] = df[col].apply(
-            lambda x: x.encode("utf-16", "surrogatepass").decode("utf-16", "replace") if isinstance(x, str) else x
-        )
 
     edited_df = st.data_editor(
         df,
