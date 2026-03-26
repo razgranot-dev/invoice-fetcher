@@ -12,11 +12,11 @@ from core.screenshot_renderer import render_selected_to_zip
 from core.word_exporter import create_invoice_report
 
 
-def _sanitize_str(s: object) -> object:
-    """Strip surrogate characters that break pyarrow/Streamlit serialization."""
+def _sanitize_str(s):
+    """Strip any bytes that are not valid UTF-8 (including surrogates)."""
     if not isinstance(s, str):
         return s
-    return s.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return s.encode("utf-8", errors="ignore").decode("utf-8")
 
 
 def _sanitize_dict(d: dict) -> dict:
@@ -105,6 +105,9 @@ def render_export_workbench(results: list[dict]):
         "\u05d1\u05d9\u05d8\u05d7\u05d5\u05df": st.column_config.TextColumn("\u05d1\u05d9\u05d8\u05d7\u05d5\u05df", width="small", disabled=True),
         "_uid": None,
     }
+
+    # Final sanitization pass — catch anything pyarrow can't encode
+    df = df.applymap(_sanitize_str)
 
     edited_df = st.data_editor(
         df,
