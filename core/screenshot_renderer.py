@@ -6,6 +6,8 @@ import html
 import logging
 import os
 import re
+import shutil
+import sys
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -71,6 +73,31 @@ def generate_filename(date_str: str, vendor: str, amount: float | None, index: i
 
 _logger = logging.getLogger(__name__)
 
+# ── Chrome path detection ──────────────────────────────────────────────────
+_CHROME_CANDIDATES_WIN = [
+    os.path.join(os.environ.get("PROGRAMFILES", ""), "Google", "Chrome", "Application", "chrome.exe"),
+    os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Google", "Chrome", "Application", "chrome.exe"),
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+]
+_CHROME_CANDIDATES_UNIX = [
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+]
+
+
+def _find_chrome() -> str | None:
+    """Auto-detect Chrome/Chromium binary path."""
+    candidates = _CHROME_CANDIDATES_WIN if sys.platform == "win32" else _CHROME_CANDIDATES_UNIX
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    # Fallback: check PATH
+    found = shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("chromium")
+    return found
+
 
 def render_email_screenshot(
     body_html: str,
@@ -102,9 +129,13 @@ def render_email_screenshot(
     try:
         from html2image import Html2Image
 
-        hti = Html2Image(output_path=output_dir, size=(800, 600))
-        html = build_html_template(body_html, body_text)
-        hti.screenshot(html_str=html, save_as=filename)
+        chrome_path = _find_chrome()
+        hti_kwargs = {"output_path": output_dir, "size": (800, 600)}
+        if chrome_path:
+            hti_kwargs["browser_executable"] = chrome_path
+        hti = Html2Image(**hti_kwargs)
+        html_content = build_html_template(body_html, body_text)
+        hti.screenshot(html_str=html_content, save_as=filename)
 
         if os.path.isfile(output_path):
             return output_path
