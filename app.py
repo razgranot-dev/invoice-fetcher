@@ -1,5 +1,5 @@
 """
-מערכת חשבוניות חכמה — ממשק Streamlit בסגנון David Hockney.
+מערכת חשבוניות חכמה — ממשק Streamlit בעיצוב Midnight Gold.
 
 שלושה מצבים:
   1. לא מוגדר  → מסך הגדרת env vars (למפתח)
@@ -41,6 +41,7 @@ for _src, _dst in (("GID", "GOOGLE_CLIENT_ID"), ("GSECRET", "GOOGLE_CLIENT_SECRE
         os.environ[_dst] = os.environ[_src]
 
 from dashboard.analytics import render_analytics
+from dashboard.export_workbench import render_export_workbench
 from dashboard.components import (
     inject_css,
     render_header,
@@ -82,8 +83,11 @@ scan_params = render_sidebar()
 # כפתור התנתקות בסרגל הצד
 with st.sidebar:
     st.markdown('<div style="height:8px;"></div>', unsafe_allow_html=True)
-    st.markdown('<div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:16px;"></div>', unsafe_allow_html=True)
-    if st.button("🔓 התנתק מ-Gmail", use_container_width=True):
+    st.markdown(
+        '<div style="border-top:1px solid rgba(255,255,255,0.06); padding-top:16px;"></div>',
+        unsafe_allow_html=True,
+    )
+    if st.button("התנתק מ-Gmail", use_container_width=True):
         st.session_state.pop("_creds_json", None)
         st.session_state.pop("_pkce_code_verifier", None)
         st.session_state.pop("_oauth_csrf_state", None)
@@ -96,16 +100,14 @@ render_header()
 # תג "מחובר"
 st.markdown(
     '<div style="text-align:left; margin-top:-12px; margin-bottom:20px; direction:rtl;">'
-    '<span style="display:inline-flex; align-items:center; gap:8px; '
-    'background:linear-gradient(135deg,rgba(52,211,153,0.10),rgba(0,200,255,0.06)); '
-    'color:#34D399; font-size:0.68rem; font-weight:700; '
-    'padding:6px 16px; border-radius:100px; '
-    'border:1px solid rgba(52,211,153,0.22); '
-    'box-shadow:0 0 14px rgba(52,211,153,0.10); '
-    'letter-spacing:0.08em; text-transform:uppercase; '
-    'backdrop-filter:blur(8px); font-family:\'Space Grotesk\',\'Inter\',sans-serif;">'
+    '<span style="display:inline-flex; align-items:center; gap:6px; '
+    'background:rgba(68,196,161,0.08); '
+    'color:#44C4A1; font-size:0.7rem; font-weight:600; '
+    'padding:5px 14px; border-radius:100px; '
+    'border:1px solid rgba(68,196,161,0.18); '
+    'font-family:\'Plus Jakarta Sans\',system-ui,sans-serif;">'
     '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;'
-    'background:#34D399;box-shadow:0 0 6px #34D399;flex-shrink:0;"></span>'
+    'background:#44C4A1;flex-shrink:0;"></span>'
     'מחובר ל-Gmail'
     '</span>'
     "</div>",
@@ -125,52 +127,58 @@ if st.session_state.results:
     render_results_table(st.session_state.results)
     st.markdown("---")
     render_analytics(st.session_state.results)
+    st.markdown("---")
+    render_export_workbench(st.session_state.results)
 
 elif st.session_state.scan_done:
-    st.info("הסריקה הסתיימה ללא תוצאות. נסה לשנות את הגדרות הסריקה.")
+    # ── מצב ריק: סריקה ללא תוצאות ──────────────────────────────────────────
+    st.markdown("""
+    <div style="text-align:center; direction:rtl; padding:64px 20px;">
+        <div style="
+            display:inline-flex; flex-direction:column; align-items:center; gap:16px;
+            background:#141722; border:1px solid rgba(255,255,255,0.06);
+            border-radius:20px; padding:48px 56px;
+        ">
+            <div style="
+                width:56px; height:56px; border-radius:50%;
+                background:rgba(232,113,111,0.08); border:1px solid rgba(232,113,111,0.15);
+                display:flex; align-items:center; justify-content:center; font-size:1.5rem;
+            ">📭</div>
+            <div style="font-size:1.1rem; font-weight:700; color:#EDEAE3;
+                letter-spacing:-0.02em; font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                לא נמצאו תוצאות
+            </div>
+            <div style="color:#8B8D97; font-size:0.85rem; max-width:280px; line-height:1.7;
+                font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
+                נסה להרחיב את טווח התאריכים או לשנות את מילות המפתח בסרגל הצד
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 else:
+    # ── מצב התחלתי: מוכן לסריקה ─────────────────────────────────────────────
     st.markdown("""
-    <div style="text-align:center; direction:rtl; padding:80px 20px;">
+    <div style="text-align:center; direction:rtl; padding:64px 20px;">
         <div style="
-            display:inline-flex; flex-direction:column; align-items:center; gap:22px;
-            background:linear-gradient(160deg,rgba(13,21,40,0.95) 0%,rgba(6,10,18,0.98) 100%);
-            border:1px solid rgba(0,200,255,0.10);
-            border-radius:28px; padding:56px 64px;
-            box-shadow:0 32px 100px rgba(0,0,0,0.65), 0 0 80px rgba(0,150,255,0.04);
-            position:relative; overflow:hidden; backdrop-filter:blur(24px);
+            display:inline-flex; flex-direction:column; align-items:center; gap:16px;
+            background:#141722; border:1px solid rgba(255,255,255,0.06);
+            border-radius:20px; padding:48px 56px;
         ">
-            <div style="position:absolute;top:0;left:0;right:0;height:2px;
-                background:linear-gradient(90deg,transparent,#00C8FF,#818CF8,transparent);
-                border-radius:28px 28px 0 0; opacity:0.6;"></div>
-            <div style="position:absolute;top:16px;right:16px;width:18px;height:18px;
-                border-top:1px solid rgba(0,200,255,0.35);border-right:1px solid rgba(0,200,255,0.35);
-                border-radius:0 5px 0 0;"></div>
-            <div style="position:absolute;bottom:16px;left:16px;width:18px;height:18px;
-                border-bottom:1px solid rgba(129,140,248,0.35);border-left:1px solid rgba(129,140,248,0.35);
-                border-radius:0 0 5px 0;"></div>
             <div style="
-                width:80px;height:80px;border-radius:50%;
-                background:linear-gradient(135deg,rgba(0,200,255,0.10),rgba(129,140,248,0.06));
-                border:1px solid rgba(0,200,255,0.20);
-                display:flex;align-items:center;justify-content:center;
-                font-size:2.4rem; position:relative;
-            ">
-                <div style="position:absolute;inset:-7px;border-radius:50%;
-                    border:1px solid rgba(0,200,255,0.06);"></div>
-                📬
-            </div>
-            <div style="font-size:1.3rem; font-weight:800; color:#EFF6FF;
-                letter-spacing:-0.02em; font-family:'Space Grotesk','Inter',sans-serif;">
+                width:56px; height:56px; border-radius:50%;
+                background:rgba(212,168,67,0.08); border:1px solid rgba(212,168,67,0.15);
+                display:flex; align-items:center; justify-content:center; font-size:1.5rem;
+            ">📬</div>
+            <div style="font-size:1.1rem; font-weight:700; color:#EDEAE3;
+                letter-spacing:-0.02em; font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
                 מוכן לסריקה
             </div>
-            <div style="color:#475569; font-size:0.88rem; max-width:260px; line-height:1.75;">
+            <div style="color:#8B8D97; font-size:0.85rem; max-width:280px; line-height:1.7;
+                font-family:'Plus Jakarta Sans',system-ui,sans-serif;">
                 הגדר פרמטרים בסרגל הצד ולחץ
-                <strong style="color:#22D3EE; font-weight:700;">🚀 התחל סריקה</strong>
+                <strong style="color:#D4A843; font-weight:700;">התחל סריקה</strong>
             </div>
-            <div style="position:absolute;bottom:-60px;left:-60px;width:180px;height:180px;
-                background:radial-gradient(circle,rgba(0,180,255,0.06) 0%,transparent 70%);
-                border-radius:50%;pointer-events:none;"></div>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -178,21 +186,15 @@ else:
 # ── כותרת תחתונה ───────────────────────────────────────────────────────────
 st.markdown("""
 <div style="
-    text-align:center; direction:rtl; margin-top:56px; padding:20px;
-    border-top:1px solid rgba(0,200,255,0.06);
-    position:relative;
+    text-align:center; direction:rtl; margin-top:48px; padding:16px;
+    border-top:1px solid rgba(255,255,255,0.04);
 ">
-    <div style="
-        position:absolute; top:-1px; left:50%; transform:translateX(-50%);
-        width:80px; height:1px;
-        background:linear-gradient(90deg,transparent,rgba(0,200,255,0.25),transparent);
-    "></div>
     <span style="
-        color:#334155; font-size:0.7rem; font-weight:500;
-        letter-spacing:0.08em; text-transform:uppercase;
-        font-family:'Space Grotesk','Inter',sans-serif;
+        color:#4E5260; font-size:0.7rem; font-weight:500;
+        letter-spacing:0.04em;
+        font-family:'Plus Jakarta Sans',system-ui,sans-serif;
     ">
-        Invoice Intelligence Console &nbsp;·&nbsp; כל הנתונים מעובדים באופן מקומי בלבד
+        Invoice Fetcher &nbsp;·&nbsp; כל הנתונים מעובדים באופן מקומי בלבד
     </span>
 </div>
 """, unsafe_allow_html=True)
