@@ -92,6 +92,12 @@ def render_export_workbench(results: list[dict]):
         "_uid": None,
     }
 
+    # Sanitize string columns — strip surrogate characters that break pyarrow
+    for col in df.select_dtypes(include="object").columns:
+        df[col] = df[col].apply(
+            lambda x: x.encode("utf-16", "surrogatepass").decode("utf-16", "replace") if isinstance(x, str) else x
+        )
+
     edited_df = st.data_editor(
         df,
         column_config=column_config,
