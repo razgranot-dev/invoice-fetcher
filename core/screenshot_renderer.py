@@ -2,9 +2,10 @@
 צילומי מסך של אימיילים — HTML→PNG via html2image, PDF fallback via PyMuPDF.
 """
 
+import html
+import logging
 import os
 import re
-import tempfile
 import zipfile
 from datetime import date
 from pathlib import Path
@@ -29,7 +30,7 @@ def is_minimal_body(text: str) -> bool:
 
 def build_html_template(body_html: str, plain_text: str = "") -> str:
     """Wrap email HTML in a clean, RTL-ready template for screenshot rendering."""
-    content = body_html if body_html else f"<pre style='white-space:pre-wrap;'>{plain_text}</pre>"
+    content = body_html if body_html else f"<pre style='white-space:pre-wrap;'>{html.escape(plain_text)}</pre>"
     return f"""<!DOCTYPE html>
 <html dir="rtl" lang="he">
 <head>
@@ -57,14 +58,18 @@ def build_html_template(body_html: str, plain_text: str = "") -> str:
 </html>"""
 
 
-def generate_filename(date_str: str, vendor: str, amount: float | None) -> str:
+def generate_filename(date_str: str, vendor: str, amount: float | None, index: int | None = None) -> str:
     """Generate a clean filename for a screenshot PNG."""
     safe_vendor = _UNSAFE_CHARS.sub("", vendor)[:50].strip()
+    suffix = f"_{index}" if index is not None else ""
     if amount is not None:
-        name = f"{date_str}_{safe_vendor}_{amount:.2f}.png"
+        name = f"{date_str}_{safe_vendor}_{amount:.2f}{suffix}.png"
     else:
-        name = f"{date_str}_{safe_vendor}.png"
+        name = f"{date_str}_{safe_vendor}{suffix}.png"
     return name
+
+
+_logger = logging.getLogger(__name__)
 
 
 def render_email_screenshot(
@@ -75,6 +80,7 @@ def render_email_screenshot(
     amount: float | None,
     attachments: list[dict] | None = None,
     output_dir: str = "exports/screenshots",
+    index: int | None = None,
 ) -> str | None:
     """Render an email to a PNG screenshot.
 
@@ -83,7 +89,7 @@ def render_email_screenshot(
     Returns path to the PNG, or None on failure.
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    filename = generate_filename(date_str, vendor, amount)
+    filename = generate_filename(date_str, vendor, amount, index)
     output_path = os.path.join(output_dir, filename)
 
     # Check if body is minimal — try PDF fallback
@@ -103,7 +109,7 @@ def render_email_screenshot(
         if os.path.isfile(output_path):
             return output_path
     except Exception:
-        pass
+        _logger.warning("html2image screenshot failed for %s", filename, exc_info=True)
 
     return None
 
@@ -131,6 +137,7 @@ def _try_pdf_fallback(
             doc.close()
             return output_path
         except Exception:
+            _logger.warning("PDF fallback failed for attachment", exc_info=True)
             continue
 
     return None
@@ -156,7 +163,7 @@ def render_selected_to_zip(
 
     rendered_paths: list[str] = []
 
-    for row in selected_rows:
+    for idx, row in enumerate(selected_rows):
         path = render_email_screenshot(
             body_html=row.get("body_html", ""),
             body_text=row.get("body_text", ""),
@@ -165,6 +172,7 @@ def render_selected_to_zip(
             amount=row.get("amount"),
             attachments=row.get("attachments"),
             output_dir=screenshots_dir,
+            index=idx,
         )
         if path:
             rendered_paths.append(path)
@@ -179,11 +187,15 @@ def render_selected_to_zip(
         for p in rendered_paths:
             zf.write(p, os.path.basename(p))
 
-    # Cleanup temp screenshots
+    # Cleanup temp screenshots and directory
     for p in rendered_paths:
         try:
             os.remove(p)
         except OSError:
             pass
+    try:
+        os.rmdir(screenshots_dir)
+    except OSError:
+        pass
 
     return zip_path

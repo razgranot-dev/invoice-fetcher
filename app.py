@@ -118,6 +118,7 @@ st.markdown(
 if scan_params.get("start_scan"):
     st.session_state.results = run_email_scan(scan_params)
     st.session_state.scan_done = True
+    st.session_state.pop("enriched_results", None)  # force re-enrichment
 
 # ── תצוגת תוצאות ───────────────────────────────────────────────────────────
 if st.session_state.results:

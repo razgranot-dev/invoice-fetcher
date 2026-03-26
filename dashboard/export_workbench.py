@@ -6,7 +6,6 @@ Appears after scan results are available.
 import os
 import streamlit as st
 import pandas as pd
-from datetime import datetime
 
 from core.amount_extractor import enrich_results
 from core.screenshot_renderer import render_selected_to_zip

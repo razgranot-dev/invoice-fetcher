@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
 
