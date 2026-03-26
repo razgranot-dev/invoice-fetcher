@@ -216,16 +216,66 @@ class GmailConnector:
                     continue
                 raise  # non-retryable or exhausted retries
 
+    # Known invoice sender domains — emails from these are always included
+    INVOICE_SENDER_DOMAINS: list[str] = [
+        "apple.com",
+        "em.apple.com",
+        "anthropic.com",
+        "openai.com",
+        "google.com",
+        "hostinger.com",
+        "mailer.hostinger.com",
+        "paypal.com",
+        "intl.paypal.com",
+    ]
+
+    # Subject patterns that indicate invoices/receipts (case-insensitive in Gmail)
+    INVOICE_SUBJECT_PATTERNS: list[str] = [
+        "your receipt from apple",
+        "invoice from apple",
+        "anthropic invoice",
+        "your anthropic receipt",
+        "openai invoice",
+        "your openai bill",
+        "google invoice",
+        "your google one receipt",
+        "google llc",
+        "hostinger invoice",
+        "order confirmation",
+        "paypal receipt",
+        "you paid",
+        "payment to",
+        "invoice from",
+        "invoice #",
+    ]
+
     def build_query(self, keywords: list[str], days_back: int, unread_only: bool) -> str:
-        """בונה שאילתת חיפוש Gmail לפי מילות מפתח, טווח ימים וסינון לא-נקרא."""
+        """Build Gmail search query from keywords, date range, sender domains, and subject patterns."""
         parts = []
         if unread_only:
             parts.append("is:unread")
         since = (datetime.now() - timedelta(days=days_back)).strftime("%Y/%m/%d")
         parts.append(f"after:{since}")
-        if keywords:
-            clauses = [f'subject:"{kw}" OR {kw}' for kw in keywords]
+
+        # Build OR clauses: user keywords + vendor domains + subject patterns
+        clauses = []
+
+        # User-provided keywords (search subject and body)
+        for kw in keywords:
+            clauses.append(f'subject:"{kw}"')
+            clauses.append(f'"{kw}"')
+
+        # Known invoice sender domains
+        for domain in self.INVOICE_SENDER_DOMAINS:
+            clauses.append(f"from:{domain}")
+
+        # Known invoice subject patterns
+        for pattern in self.INVOICE_SUBJECT_PATTERNS:
+            clauses.append(f'subject:"{pattern}"')
+
+        if clauses:
             parts.append(f"({' OR '.join(clauses)})")
+
         return " ".join(parts)
 
     def list_message_ids(
