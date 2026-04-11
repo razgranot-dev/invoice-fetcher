@@ -10,6 +10,7 @@ from core.attachment_handler import AttachmentHandler
 from core.body_parser import BodyParser
 from core.data_exporter import DataExporter
 from core.gmail_connector import GmailConnector
+from core.invoice_classifier import classify_results, TIER_NOT, format_signal_breakdown
 
 
 def run_email_scan(params: dict) -> list[dict]:
@@ -40,7 +41,7 @@ def run_email_scan(params: dict) -> list[dict]:
             # Token revoked or expired — clear auth state and ask user to reconnect
             for _key in ("_creds_json", "_pkce_code_verifier", "_oauth_csrf_state"):
                 st.session_state.pop(_key, None)
-            st.error("🔒 פג תוקף הגישה ל-Gmail או שהיא בוטלה.")
+            st.error("\u05e4\u05d2 \u05ea\u05d5\u05e7\u05e3 \u05d4\u05d2\u05d9\u05e9\u05d4 \u05dc-Gmail \u05d0\u05d5 \u05e9\u05d4\u05d9\u05d0 \u05d1\u05d5\u05d8\u05dc\u05d4.")
             st.info("אנא לחץ על 'התנתק מ-Gmail' בסרגל הצד והתחבר מחדש.")
             return []
         st.error(f"שגיאה: לא ניתן לאתחל את שירות Gmail: {updated_creds_json}")
@@ -54,7 +55,7 @@ def run_email_scan(params: dict) -> list[dict]:
             progress = st.progress(0, text="מאתחל...")
 
             # ── חיפוש מזהי הודעות ────────────────────────────────────
-            st.write("🔍 מחפש הודעות לפי מילות מפתח...")
+            st.write("\u05de\u05d7\u05e4\u05e9 \u05d4\u05d5\u05d3\u05e2\u05d5\u05ea \u05dc\u05e4\u05d9 \u05de\u05d9\u05dc\u05d5\u05ea \u05de\u05e4\u05ea\u05d7...")
             progress.progress(5, text="מחפש הודעות...")
 
             try:
@@ -73,7 +74,7 @@ def run_email_scan(params: dict) -> list[dict]:
                 scan_status.update(label="לא נמצאו הודעות", state="complete", expanded=False)
                 return []
 
-            st.write(f"📬 נמצאו **{total}** הודעות. מתחיל עיבוד...")
+            st.write(f"\u05e0\u05de\u05e6\u05d0\u05d5 **{total}** \u05d4\u05d5\u05d3\u05e2\u05d5\u05ea. \u05de\u05ea\u05d7\u05d9\u05dc \u05e2\u05d9\u05d1\u05d5\u05d3...")
             progress.progress(10, text=f"עיבוד {total} הודעות...")
 
             # ── עיבוד כל הודעה ────────────────────────────────────────
@@ -134,24 +135,43 @@ def run_email_scan(params: dict) -> list[dict]:
                     st.warning(f"שגיאה בעיבוד הודעה {idx}: {exc} — ממשיך...")
                     continue
 
+            # ── סיווג חשבוניות ─────────────────────────────────────────
+            progress.progress(93, text="\u05de\u05e1\u05d5\u05d5\u05d2 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea...")
+            st.write("\u05de\u05e1\u05d5\u05d5\u05d2 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea \u05dc\u05e4\u05d9 \u05e8\u05de\u05ea \u05d1\u05d9\u05d8\u05d7\u05d5\u05df...")
+            classify_results(results)
+
+            # Count tiers
+            tier_counts: dict[str, int] = {}
+            for r in results:
+                t = r.get("classification_tier", "unknown")
+                tier_counts[t] = tier_counts.get(t, 0) + 1
+            not_invoice_count = tier_counts.get(TIER_NOT, 0)
+            invoice_count = len(results) - not_invoice_count
+
+            st.write(
+                f"\u05e1\u05d9\u05d5\u05d5\u05d2: **{invoice_count}** "
+                f"\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea \u05de\u05ea\u05d5\u05da {len(results)} "
+                f"\u05d4\u05d5\u05d3\u05e2\u05d5\u05ea ({not_invoice_count} \u05e1\u05d5\u05e0\u05e0\u05d5)"
+            )
+
             # ── ייצוא ──────────────────────────────────────────────────
-            progress.progress(97, text="מייצא נתונים...")
-            st.write("💾 מייצא ל-CSV ו-JSON...")
+            progress.progress(97, text="\u05de\u05d9\u05d9\u05e6\u05d0 \u05e0\u05ea\u05d5\u05e0\u05d9\u05dd...")
+            st.write("\u05de\u05d9\u05d9\u05e6\u05d0 \u05dc-CSV \u05d5-JSON...")
             try:
                 exporter.export_csv()
                 exporter.export_json()
-                st.write(f"✅ {exporter.get_summary()}")
+                st.write(f"{exporter.get_summary()}")
             except Exception as exc:
-                st.warning(f"שגיאה בייצוא: {exc}")
+                st.warning(f"\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05d9\u05d9\u05e6\u05d5\u05d0: {exc}")
 
-            progress.progress(100, text="הסריקה הושלמה!")
+            progress.progress(100, text="\u05d4\u05e1\u05e8\u05d9\u05e7\u05d4 \u05d4\u05d5\u05e9\u05dc\u05de\u05d4!")
             scan_status.update(
-                label=f"✅ הסריקה הושלמה — עובדו {len(results)} הודעות",
+                label=f"\u05d4\u05e1\u05e8\u05d9\u05e7\u05d4 \u05d4\u05d5\u05e9\u05dc\u05de\u05d4 \u2014 {invoice_count} \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea \u05de\u05ea\u05d5\u05da {len(results)} \u05d4\u05d5\u05d3\u05e2\u05d5\u05ea",
                 state="complete",
                 expanded=False,
             )
 
-        st.success(f"סריקת Gmail הסתיימה! נמצאו {len(results)} חשבוניות מתוך {total} הודעות.")
+        st.success(f"\u05e1\u05e8\u05d9\u05e7\u05ea Gmail \u05d4\u05e1\u05ea\u05d9\u05d9\u05de\u05d4! {invoice_count} \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea \u05de\u05ea\u05d5\u05da {total} \u05d4\u05d5\u05d3\u05e2\u05d5\u05ea.")
 
     except Exception as exc:
         st.error(f"שגיאה בלתי צפויה: {exc}")

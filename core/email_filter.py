@@ -20,9 +20,14 @@ logger = get_logger(__name__)
 _מילות_מפתח_ברירת_מחדל: list[str] = [
     "חשבונית",
     "קבלה",
+    "חשבון",
+    "חיוב",
+    "תשלום",
     "אישור תשלום",
     "invoice",
     "receipt",
+    "billing",
+    "payment",
 ]
 
 

@@ -223,14 +223,22 @@ class GmailConnector:
         "anthropic.com",
         "openai.com",
         "google.com",
+        "payments.google.com",
         "hostinger.com",
         "mailer.hostinger.com",
         "paypal.com",
         "intl.paypal.com",
+        "amazon.com",
+        "amazon.co.il",
+        "microsoft.com",
+        "wix.com",
+        "spotify.com",
+        "netflix.com",
     ]
 
     # Subject patterns that indicate invoices/receipts (case-insensitive in Gmail)
     INVOICE_SUBJECT_PATTERNS: list[str] = [
+        # English vendor patterns
         "your receipt from apple",
         "invoice from apple",
         "anthropic invoice",
@@ -247,6 +255,27 @@ class GmailConnector:
         "payment to",
         "invoice from",
         "invoice #",
+        "billing statement",
+        "payment confirmation",
+        "payment received",
+        "subscription receipt",
+        "your order",
+        # Hebrew invoice patterns
+        "חשבונית מס",
+        "אישור חיוב",
+        "חשבון חודשי",
+        "הודעת תשלום",
+        "אישור הזמנה",
+        "פירוט חיוב",
+    ]
+
+    # Attachment filenames that indicate invoices (searched via Gmail filename: operator)
+    INVOICE_FILENAME_KEYWORDS: list[str] = [
+        "invoice",
+        "receipt",
+        "חשבונית",
+        "קבלה",
+        "חשבון",
     ]
 
     def build_query(self, keywords: list[str], days_back: int, unread_only: bool) -> str:
@@ -257,13 +286,23 @@ class GmailConnector:
         since = (datetime.now() - timedelta(days=days_back)).strftime("%Y/%m/%d")
         parts.append(f"after:{since}")
 
-        # Build OR clauses: user keywords + vendor domains + subject patterns
+        # Build OR clauses: user keywords + vendor domains + subject patterns + filenames
         clauses = []
 
         # User-provided keywords (search subject and body)
+        seen_words: set[str] = set()
         for kw in keywords:
             clauses.append(f'subject:"{kw}"')
             clauses.append(f'"{kw}"')
+            seen_words.add(kw.strip().lower())
+            # For multi-word keywords, also search each word individually in subject.
+            # This ensures "אישור תשלום" also matches "הודעת תשלום" via the "תשלום" word.
+            words = kw.strip().split()
+            if len(words) > 1:
+                for word in words:
+                    if len(word) >= 3 and word.lower() not in seen_words:
+                        clauses.append(f'subject:"{word}"')
+                        seen_words.add(word.lower())
 
         # Known invoice sender domains
         for domain in self.INVOICE_SENDER_DOMAINS:
@@ -272,6 +311,11 @@ class GmailConnector:
         # Known invoice subject patterns
         for pattern in self.INVOICE_SUBJECT_PATTERNS:
             clauses.append(f'subject:"{pattern}"')
+
+        # Attachment filename detection — catches emails where the attachment
+        # is named "invoice.pdf" / "חשבונית.pdf" even if body has no keywords
+        for fname_kw in self.INVOICE_FILENAME_KEYWORDS:
+            clauses.append(f'filename:"{fname_kw}"')
 
         if clauses:
             parts.append(f"({' OR '.join(clauses)})")

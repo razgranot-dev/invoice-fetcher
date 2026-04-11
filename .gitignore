@@ -5,6 +5,7 @@ credentials.json
 
 # Output files
 output/
+exports/
 
 # Python
 __pycache__/
@@ -25,5 +26,25 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Claude
+# Claude & AI tools
 .claude/
+.claude-flow/
+.superpowers/
+.mcp.json
+
+# Large media (use static serving locally, not in git)
+*.mov
+*.mp4
+
+# Junk / accidental file creation
+.main
+1.23.0*
+button[kind*
+list[dict]*
+str
+{encoded.hex()}*
+
+# Debug / diagnostic scripts
+test_import.py
+_diag.py
+create_shortcut.py

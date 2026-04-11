@@ -147,15 +147,3 @@ class AttachmentHandler:
         clean = _SAFE_FILENAME_RE.sub("_", name).strip()
         return clean or "קובץ_מצורף"
 
-    @staticmethod
-    def _unique_path(path: Path) -> Path:
-        """מחזיר נתיב ייחודי — מוסיף מספר אם הקובץ קיים."""
-        if not path.exists():
-            return path
-        stem, suffix = path.stem, path.suffix
-        counter = 1
-        while True:
-            candidate = path.parent / f"{stem}_{counter}{suffix}"
-            if not candidate.exists():
-                return candidate
-            counter += 1

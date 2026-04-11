@@ -9,8 +9,13 @@ import streamlit as st
 import pandas as pd
 
 from core.amount_extractor import enrich_results
+from core.invoice_classifier import (
+    TIER_CONFIRMED, TIER_LIKELY, TIER_POSSIBLE, TIER_NOT,
+    tier_display_name, format_signal_breakdown,
+)
 from core.screenshot_renderer import render_selected_to_zip
 from core.word_exporter import create_invoice_report
+from dashboard.components import _extract_company
 
 
 def _sanitize_str(s):
@@ -48,30 +53,41 @@ def _build_dataframe(enriched: list[dict]) -> pd.DataFrame:
     """Build the editable DataFrame from enriched results."""
     rows = []
     for r in enriched:
+        tier = r.get("classification_tier", TIER_POSSIBLE)
         rows.append({
-            _COL_SELECTED: True,
+            _COL_SELECTED: tier in (TIER_CONFIRMED, TIER_LIKELY),
             _COL_DATE: _sanitize_str(r.get("date", "")[:16] if r.get("date") else ""),
             _COL_VENDOR: _sanitize_str(r.get("description", "")),
             _COL_AMOUNT: r.get("amount"),
             _COL_CURRENCY: _sanitize_str(r.get("currency", "\u20aa")),
             _COL_STATUS: "\u05e7\u05d5\u05d1\u05e5 \u05de\u05e6\u05d5\u05e8\u05e3" if r.get("saved_path") or r.get("attachments") else "\u05dc\u05dc\u05d0 \u05e7\u05d5\u05d1\u05e5",
             _COL_NOTES: _sanitize_str(r.get("notes", "")),
-            _COL_CONFIDENCE: _sanitize_str(r.get("confidence", "low")),
+            _COL_CONFIDENCE: _sanitize_str(tier_display_name(tier)),
             "_uid": _sanitize_str(r.get("uid", "")),
+            "_tier": tier,
+            "_score": r.get("classification_score", 0),
         })
     return pd.DataFrame(rows)
 
 
 def _get_selected_rows(edited_df: pd.DataFrame, enriched: list[dict]) -> list[dict]:
-    """Match selected rows back to enriched results for export."""
+    """Match selected rows back to enriched results for export using UID."""
+    # Build UID → enriched-dict lookup for safe matching
+    uid_map = {_sanitize_str(r.get("uid", "")): r for r in enriched}
+
     selected = []
-    for idx, row in edited_df.iterrows():
-        if row.get(_COL_SELECTED, False) and idx < len(enriched):
-            result = _sanitize_dict(enriched[idx])
-            result["description"] = _sanitize_str(row.get(_COL_VENDOR, result.get("description", "")))
-            result["amount"] = row.get(_COL_AMOUNT, result.get("amount"))
-            result["notes"] = _sanitize_str(row.get(_COL_NOTES, result.get("notes", "")))
-            selected.append(result)
+    for _, row in edited_df.iterrows():
+        if not row.get(_COL_SELECTED, False):
+            continue
+        uid = row.get("_uid", "")
+        base = uid_map.get(uid)
+        if base is None:
+            continue
+        result = _sanitize_dict(base)
+        result["description"] = _sanitize_str(row.get(_COL_VENDOR, result.get("description", "")))
+        result["amount"] = row.get(_COL_AMOUNT, result.get("amount"))
+        result["notes"] = _sanitize_str(row.get(_COL_NOTES, result.get("notes", "")))
+        selected.append(result)
     return selected
 
 
@@ -85,13 +101,68 @@ def render_export_workbench(results: list[dict]):
             _sanitize_dict(r) for r in enrich_results(results)
         ]
 
-    enriched = st.session_state["enriched_results"]
+    enriched_all = st.session_state["enriched_results"]
 
-    # Section header
-    st.markdown(
-        '<div class="section-title">\u05d9\u05d9\u05e6\u05d5\u05d0 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea</div>',
-        unsafe_allow_html=True,
-    )
+    # Apply company filter (same filter used by the CSV results table)
+    selected_companies = st.session_state.get("_company_selection")
+    if selected_companies is not None:
+        enriched = [
+            r for r in enriched_all
+            if _extract_company(r.get("sender", "")) in selected_companies
+        ]
+    else:
+        enriched = enriched_all
+
+    # ── Tier filter ─────────────────────────────────────────────────
+    # Count tiers across enriched results
+    _tier_counts = {}
+    for r in enriched:
+        t = r.get("classification_tier", TIER_POSSIBLE)
+        _tier_counts[t] = _tier_counts.get(t, 0) + 1
+
+    _filter_options = {
+        "\u05de\u05d0\u05d5\u05de\u05ea\u05d5\u05ea \u05d1\u05dc\u05d1\u05d3": [TIER_CONFIRMED],                                    # מאומתות בלבד
+        "\u05de\u05d0\u05d5\u05de\u05ea\u05d5\u05ea + \u05e1\u05d1\u05d9\u05e8\u05d5\u05ea": [TIER_CONFIRMED, TIER_LIKELY],           # מאומתות + סבירות
+        "\u05db\u05dc \u05d4\u05e4\u05d9\u05e0\u05e0\u05e1\u05d9\u05d5\u05ea": [TIER_CONFIRMED, TIER_LIKELY, TIER_POSSIBLE],          # כל הפיננסיות
+        "\u05d4\u05db\u05dc (\u05db\u05d5\u05dc\u05dc \u05dc\u05d0 \u05e8\u05dc\u05d5\u05d5\u05e0\u05d8\u05d9)": [TIER_CONFIRMED, TIER_LIKELY, TIER_POSSIBLE, TIER_NOT],  # הכל
+    }
+    # Default to "confirmed + likely"
+    _default_filter = "\u05de\u05d0\u05d5\u05de\u05ea\u05d5\u05ea + \u05e1\u05d1\u05d9\u05e8\u05d5\u05ea"
+
+    col_filter, col_tier_info = st.columns([2, 3])
+    with col_filter:
+        selected_filter = st.selectbox(
+            "\u05e8\u05de\u05ea \u05e1\u05d9\u05e0\u05d5\u05df",  # רמת סינון
+            list(_filter_options.keys()),
+            index=list(_filter_options.keys()).index(_default_filter),
+            key="tier_filter_select",
+        )
+    with col_tier_info:
+        tier_parts = []
+        if _tier_counts.get(TIER_CONFIRMED, 0):
+            tier_parts.append(f"\u05de\u05d0\u05d5\u05de\u05ea\u05d5\u05ea: {_tier_counts[TIER_CONFIRMED]}")
+        if _tier_counts.get(TIER_LIKELY, 0):
+            tier_parts.append(f"\u05e1\u05d1\u05d9\u05e8\u05d5\u05ea: {_tier_counts[TIER_LIKELY]}")
+        if _tier_counts.get(TIER_POSSIBLE, 0):
+            tier_parts.append(f"\u05d0\u05d5\u05dc\u05d9: {_tier_counts[TIER_POSSIBLE]}")
+        if _tier_counts.get(TIER_NOT, 0):
+            tier_parts.append(f"\u05dc\u05d0 \u05e8\u05dc\u05d5\u05d5\u05e0\u05d8\u05d9: {_tier_counts[TIER_NOT]}")
+        st.caption(" · ".join(tier_parts) if tier_parts else "")
+
+    allowed_tiers = _filter_options.get(selected_filter, [TIER_CONFIRMED, TIER_LIKELY])
+    enriched = [r for r in enriched if r.get("classification_tier", TIER_POSSIBLE) in allowed_tiers]
+
+    # Show filter status
+    if len(enriched) < len(enriched_all):
+        st.caption(
+            f"\u05de\u05e6\u05d9\u05d2 **{len(enriched)}** "
+            f"\u05de\u05ea\u05d5\u05da {len(enriched_all)} \u05d4\u05d5\u05d3\u05e2\u05d5\u05ea "
+            f"(\u05dc\u05e4\u05d9 \u05e1\u05d9\u05e0\u05d5\u05df)"
+        )
+
+    if not enriched:
+        st.info("\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea \u05d1\u05e8\u05de\u05d4 \u05d6\u05d5. \u05e0\u05e1\u05d4 \u05dc\u05d4\u05e8\u05d7\u05d9\u05d1 \u05d0\u05ea \u05d4\u05e1\u05d9\u05e0\u05d5\u05df.")
+        return
 
     # Select All / Deselect All controls
     col_sel, col_desel, col_count, col_spacer = st.columns([1, 1, 2, 4])
@@ -119,10 +190,16 @@ def render_export_workbench(results: list[dict]):
         _COL_NOTES: st.column_config.TextColumn(_COL_NOTES, width="medium"),
         _COL_CONFIDENCE: st.column_config.TextColumn(_COL_CONFIDENCE, width="small", disabled=True),
         "_uid": None,
+        "_tier": None,
+        "_score": None,
     }
 
     # Final sanitization pass -- catch anything pyarrow can't encode
-    df = df.applymap(_sanitize_str)
+    df = df.map(_sanitize_str)
+
+    # Key includes row count + UID hash so the editor resets when filters change
+    _uid_hash = hash(tuple(r.get("uid", "") for r in enriched))
+    editor_key = f"export_table_editor_{len(enriched)}_{_uid_hash}"
 
     edited_df = st.data_editor(
         df,
@@ -130,7 +207,7 @@ def render_export_workbench(results: list[dict]):
         use_container_width=True,
         hide_index=True,
         num_rows="fixed",
-        key="export_table_editor",
+        key=editor_key,
     )
 
     # Compute selection stats
@@ -139,23 +216,14 @@ def render_export_workbench(results: list[dict]):
     selected_amounts = edited_df.loc[selected_mask, _COL_AMOUNT].dropna()
     total_amount = selected_amounts.sum()
 
-    # Export Bar
+    # Action bar — compact summary
     st.markdown(
-        f'<div style="'
-        f'margin-top:16px; padding:14px 24px; background:#141722; '
-        f'border:1px solid rgba(255,255,255,0.06); border-radius:12px; '
-        f'display:flex; align-items:center; justify-content:space-between; '
-        f'direction:rtl; flex-wrap:wrap; gap:10px;'
-        f'">'
-        f'<div style="display:flex; align-items:center; gap:8px;">'
-        f'<span style="background:rgba(212,168,67,0.12); color:#D4A843; font-weight:700; '
-        f'padding:4px 10px; border-radius:6px; font-size:14px;">{selected_count}</span>'
-        f'<span style="color:#8B8D97; font-size:13px;">'
-        f'\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea \u05e0\u05d1\u05d7\u05e8\u05d5</span>'
-        f'<span style="color:#4E5260; margin:0 4px;">\u00b7</span>'
-        f'<span style="color:#44C4A1; font-size:13px; font-weight:600;">'
-        f'\u20aa{total_amount:,.2f} '
-        f'\u05e1\u05d4"\u05db</span>'
+        f'<div class="action-bar">'
+        f'<div class="action-bar-stat">'
+        f'<span class="action-bar-count">{selected_count}</span>'
+        f'<span class="action-bar-label">\u05e0\u05d1\u05d7\u05e8\u05d5</span>'
+        f'<span class="action-bar-sep">\u00b7</span>'
+        f'<span class="action-bar-amount">\u20aa{total_amount:,.2f}</span>'
         f'</div>'
         f'</div>',
         unsafe_allow_html=True,
@@ -195,17 +263,43 @@ def render_export_workbench(results: list[dict]):
 
 def _do_zip_export(selected_rows: list[dict]):
     """Run the ZIP screenshot export with progress feedback."""
+    result = None
     with st.status("\u05de\u05d9\u05d9\u05e6\u05e8 \u05e6\u05d9\u05dc\u05d5\u05de\u05d9 \u05de\u05e1\u05da...", expanded=True) as status:
         progress = st.progress(0, text="\u05de\u05d0\u05ea\u05d7\u05dc...")
+        try:
+            total = len(selected_rows)
 
-        progress.progress(20, text="\u05de\u05e2\u05d1\u05d3 \u05d0\u05d9\u05de\u05d9\u05d9\u05dc\u05d9\u05dd...")
-        zip_path = render_selected_to_zip(selected_rows)
+            def _on_progress(idx, count, vendor):
+                pct = int(10 + 85 * idx / max(count, 1))
+                progress.progress(min(pct, 95), text=f"\u05de\u05e6\u05dc\u05dd {idx + 1}/{count}: {vendor}")
 
-        progress.progress(100, text="\u05d4\u05d5\u05e9\u05dc\u05dd!")
-        status.update(
-            label="\u05e6\u05d9\u05dc\u05d5\u05de\u05d9 \u05de\u05e1\u05da \u05de\u05d5\u05db\u05e0\u05d9\u05dd!",
-            state="complete", expanded=False,
-        )
+            progress.progress(5, text=f"\u05de\u05ea\u05d7\u05d9\u05dc \u05e6\u05d9\u05dc\u05d5\u05dd {total} \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea...")
+            result = render_selected_to_zip(selected_rows, progress_callback=_on_progress)
+
+            progress.progress(100, text="\u05d4\u05d5\u05e9\u05dc\u05dd!")
+            status.update(
+                label="\u05e6\u05d9\u05dc\u05d5\u05de\u05d9 \u05de\u05e1\u05da \u05de\u05d5\u05db\u05e0\u05d9\u05dd!",
+                state="complete", expanded=False,
+            )
+        except Exception as exc:
+            status.update(
+                label="\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05d9\u05d9\u05e6\u05d5\u05d0 \u05e6\u05d9\u05dc\u05d5\u05de\u05d9 \u05de\u05e1\u05da",
+                state="error", expanded=False,
+            )
+            st.error(f"\u05d9\u05d9\u05e6\u05d5\u05d0 ZIP \u05e0\u05db\u05e9\u05dc: {exc}")
+            return
+
+    # result is a dict with zip_path, stats, and summary
+    if not isinstance(result, dict):
+        st.warning("\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05dc\u05ea\u05d9 \u05e6\u05e4\u05d5\u05d9\u05d4 \u05d1\u05d9\u05d9\u05e6\u05d5\u05d0.")
+        return
+
+    zip_path = result.get("zip_path")
+    summary = result.get("summary", "")
+
+    # Always show the export summary
+    if summary:
+        st.caption(f"\u05e1\u05d9\u05db\u05d5\u05dd: {summary}")
 
     if zip_path:
         with open(zip_path, "rb") as f:
@@ -217,22 +311,65 @@ def _do_zip_export(selected_rows: list[dict]):
                 use_container_width=True,
             )
     else:
-        st.warning("\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d9\u05d7 \u05dc\u05d9\u05d9\u05e6\u05e8 \u05e6\u05d9\u05dc\u05d5\u05de\u05d9 \u05de\u05e1\u05da. \u05d5\u05d3\u05d0 \u05e9-Chrome \u05de\u05d5\u05ea\u05e7\u05df \u05d1\u05de\u05d7\u05e9\u05d1.")
+        # Show specific failure reason instead of generic message
+        if result.get("chrome_missing", 0) > 0:
+            st.error(
+                "Chrome \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0 \u05d1\u05de\u05d7\u05e9\u05d1. "
+                "\u05d5\u05d3\u05d0 \u05e9-Google Chrome \u05de\u05d5\u05ea\u05e7\u05df."
+            )
+        elif result.get("chrome_crash", 0) > 0:
+            st.error(
+                f"Chrome \u05e7\u05e8\u05e1 {result['chrome_crash']} \u05e4\u05e2\u05de\u05d9\u05dd. "
+                "\u05e0\u05e1\u05d4 \u05dc\u05e1\u05d2\u05d5\u05e8 \u05ea\u05d4\u05dc\u05d9\u05db\u05d9 Chrome \u05d0\u05d7\u05e8\u05d9\u05dd \u05d5\u05dc\u05e0\u05e1\u05d5\u05ea \u05e9\u05d5\u05d1."
+            )
+        elif result.get("no_output_file", 0) > 0:
+            st.warning(
+                f"Chrome \u05e8\u05e5 \u05d0\u05d1\u05dc \u05dc\u05d0 \u05d9\u05e6\u05e8 \u05e7\u05d5\u05d1\u05e5 ({result['no_output_file']} \u05e4\u05e2\u05de\u05d9\u05dd). "
+                "\u05d1\u05d3\u05e7 \u05d0\u05ea \u05d4\u05dc\u05d5\u05d2 \u05dc\u05e4\u05e8\u05d8\u05d9\u05dd."
+            )
+        elif result.get("output_dir_not_writable", 0) > 0:
+            st.error(
+                "\u05ea\u05d9\u05e7\u05d9\u05d9\u05ea \u05d4\u05e4\u05dc\u05d8 \u05d0\u05d9\u05e0\u05d4 \u05e0\u05d9\u05ea\u05e0\u05ea \u05dc\u05db\u05ea\u05d9\u05d1\u05d4. "
+                "\u05d1\u05d3\u05e7 \u05d4\u05e8\u05e9\u05d0\u05d5\u05ea \u05dc\u05ea\u05d9\u05e7\u05d9\u05d9\u05ea exports/."
+            )
+        elif result.get("timed_out", 0) > 0:
+            st.warning(
+                f"\u05db\u05dc \u05d4\u05e6\u05d9\u05dc\u05d5\u05de\u05d9\u05dd \u05e0\u05db\u05e9\u05dc\u05d5 ({result['timed_out']} \u05d7\u05e8\u05d9\u05d2\u05d5\u05ea \u05d6\u05de\u05df). "
+                "\u05e0\u05e1\u05d4 \u05e2\u05dd \u05e4\u05d7\u05d5\u05ea \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea."
+            )
+        else:
+            st.warning(
+                "\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d9\u05d7 \u05dc\u05d9\u05d9\u05e6\u05e8 \u05e6\u05d9\u05dc\u05d5\u05de\u05d9 \u05de\u05e1\u05da. "
+                "\u05d1\u05d3\u05e7 \u05d0\u05ea \u05d4\u05dc\u05d5\u05d2 \u05dc\u05e4\u05e8\u05d8\u05d9\u05dd."
+            )
+
+        # Show bail-out diagnosis if available
+        diagnosis = result.get("bail_diagnosis", "")
+        if diagnosis:
+            st.caption(f"\u05d0\u05d1\u05d7\u05e0\u05d4: {diagnosis}")
 
 
 def _do_word_export(selected_rows: list[dict]):
     """Run the Word table export with progress feedback."""
+    word_path = None
     with st.status("\u05de\u05d9\u05d9\u05e6\u05e8 \u05d3\u05d5\u05d7 Word...", expanded=True) as status:
         progress = st.progress(0, text="\u05de\u05d0\u05ea\u05d7\u05dc...")
+        try:
+            progress.progress(50, text="\u05d1\u05d5\u05e0\u05d4 \u05d8\u05d1\u05dc\u05d4...")
+            word_path = create_invoice_report(selected_rows)
 
-        progress.progress(50, text="\u05d1\u05d5\u05e0\u05d4 \u05d8\u05d1\u05dc\u05d4...")
-        word_path = create_invoice_report(selected_rows)
-
-        progress.progress(100, text="\u05d4\u05d5\u05e9\u05dc\u05dd!")
-        status.update(
-            label="\u05d3\u05d5\u05d7 Word \u05de\u05d5\u05db\u05df!",
-            state="complete", expanded=False,
-        )
+            progress.progress(100, text="\u05d4\u05d5\u05e9\u05dc\u05dd!")
+            status.update(
+                label="\u05d3\u05d5\u05d7 Word \u05de\u05d5\u05db\u05df!",
+                state="complete", expanded=False,
+            )
+        except Exception as exc:
+            status.update(
+                label="\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05d9\u05d9\u05e6\u05d5\u05d0 Word",
+                state="error", expanded=False,
+            )
+            st.error(f"\u05d9\u05d9\u05e6\u05d5\u05d0 Word \u05e0\u05db\u05e9\u05dc: {exc}")
+            return
 
     if word_path:
         with open(word_path, "rb") as f:
