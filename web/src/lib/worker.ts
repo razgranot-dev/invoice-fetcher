@@ -99,6 +99,85 @@ export interface ExportResult {
   failedCount?: number;
 }
 
+/**
+ * Read an NDJSON response body as a stream, calling onProgress for each line
+ * as it arrives from the worker — not after the entire response buffers.
+ */
+async function readNdjsonStream(
+  res: Response,
+  onProgress?: (progress: number, message: string) => Promise<void>
+): Promise<ExportResult> {
+  let fileData: Buffer | null = null;
+  let lastError: string | null = null;
+  let failures: Array<{ supplier: string; date: string; reason: string }> | undefined;
+
+  function processLine(line: string) {
+    if (!line.trim()) return;
+    try {
+      const data = JSON.parse(line);
+      if (data.file) {
+        fileData = Buffer.from(data.file, "base64");
+      }
+      if (data.failures) {
+        failures = data.failures;
+      }
+      if (data.error) {
+        lastError = data.error;
+      }
+      return data;
+    } catch {
+      return null;
+    }
+  }
+
+  // Stream the response body line-by-line so progress DB writes happen in real time
+  if (res.body) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      // Keep the last (possibly incomplete) chunk in the buffer
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const data = processLine(line);
+        if (data?.progress != null && onProgress) {
+          await onProgress(data.progress, data.message ?? "");
+        }
+      }
+    }
+
+    // Process any remaining data in buffer
+    if (buffer.trim()) {
+      const data = processLine(buffer);
+      if (data?.progress != null && onProgress) {
+        await onProgress(data.progress, data.message ?? "");
+      }
+    }
+  } else {
+    // Fallback: no streaming body (shouldn't happen in Node.js)
+    const text = await res.text();
+    for (const line of text.split("\n")) {
+      const data = processLine(line);
+      if (data?.progress != null && onProgress) {
+        await onProgress(data.progress, data.message ?? "");
+      }
+    }
+  }
+
+  if (!fileData) {
+    throw new Error(lastError ?? "Worker returned no file data");
+  }
+
+  return { file: fileData, failures, failedCount: failures?.length };
+}
+
 export async function dispatchWordExport(
   invoices: Array<Record<string, unknown>>,
   organizationName: string,
@@ -141,39 +220,7 @@ export async function dispatchWordExport(
     throw new Error(`Worker export error ${res.status}: ${text}`);
   }
 
-  // Read streaming NDJSON response
-  const text = await res.text();
-  const lines = text.split("\n").filter((l) => l.trim());
-
-  let fileData: Buffer | null = null;
-  let lastError: string | null = null;
-  let failures: Array<{ supplier: string; date: string; reason: string }> | undefined;
-
-  for (const line of lines) {
-    try {
-      const data = JSON.parse(line);
-      if (data.progress != null && onProgress) {
-        await onProgress(data.progress, data.message ?? "");
-      }
-      if (data.file) {
-        fileData = Buffer.from(data.file, "base64");
-      }
-      if (data.failures) {
-        failures = data.failures;
-      }
-      if (data.error) {
-        lastError = data.error;
-      }
-    } catch {
-      // Skip malformed lines
-    }
-  }
-
-  if (!fileData) {
-    throw new Error(lastError ?? "Worker returned no file data");
-  }
-
-  return { file: fileData, failures, failedCount: failures?.length };
+  return readNdjsonStream(res, onProgress);
 }
 
 export async function dispatchScreenshotZip(
@@ -210,36 +257,5 @@ export async function dispatchScreenshotZip(
     throw new Error(`Worker screenshot-zip error ${res.status}: ${text}`);
   }
 
-  const text = await res.text();
-  const lines = text.split("\n").filter((l) => l.trim());
-
-  let fileData: Buffer | null = null;
-  let lastError: string | null = null;
-  let failures: Array<{ supplier: string; date: string; reason: string }> | undefined;
-
-  for (const line of lines) {
-    try {
-      const data = JSON.parse(line);
-      if (data.progress != null && onProgress) {
-        await onProgress(data.progress, data.message ?? "");
-      }
-      if (data.file) {
-        fileData = Buffer.from(data.file, "base64");
-      }
-      if (data.failures) {
-        failures = data.failures;
-      }
-      if (data.error) {
-        lastError = data.error;
-      }
-    } catch {
-      // Skip malformed lines
-    }
-  }
-
-  if (!fileData) {
-    throw new Error(lastError ?? "Worker returned no ZIP data");
-  }
-
-  return { file: fileData, failures, failedCount: failures?.length };
+  return readNdjsonStream(res, onProgress);
 }
