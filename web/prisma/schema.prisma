@@ -1,0 +1,265 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Auth.js models ──────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+  memberships   OrganizationMember[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ── Multi-tenant ────────────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  plan      Plan     @default(FREE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members     OrganizationMember[]
+  connections GmailConnection[]
+  scans       Scan[]
+  invoices    Invoice[]
+  exports     Export[]
+  suppliers   Supplier[]
+
+  @@map("organizations")
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrgRole  @default(MEMBER)
+  joinedAt       DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("organization_members")
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum Plan {
+  FREE
+  PRO
+  BUSINESS
+  ENTERPRISE
+}
+
+// ── Gmail ───────────────────────────────────────────────────────────────
+
+model GmailConnection {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  accessToken    String   @db.Text
+  refreshToken   String?  @db.Text
+  tokenExpiry    DateTime?
+  scopes         String[]
+  isActive       Boolean  @default(true)
+  connectedAt    DateTime @default(now())
+  lastUsedAt     DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  scans        Scan[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@map("gmail_connections")
+}
+
+// ── Scans ───────────────────────────────────────────────────────────────
+
+model Scan {
+  id               String     @id @default(cuid())
+  organizationId   String
+  connectionId     String
+  status           ScanStatus @default(PENDING)
+  keywords         String[]
+  daysBack         Int        @default(30)
+  unreadOnly       Boolean    @default(true)
+  totalMessages    Int        @default(0)
+  processedCount   Int        @default(0)
+  invoiceCount     Int        @default(0)
+  errorMessage     String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime   @default(now())
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connection   GmailConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  invoices     Invoice[]
+
+  @@index([organizationId])
+  @@index([connectionId])
+  @@map("scans")
+}
+
+enum ScanStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// ── Invoices ────────────────────────────────────────────────────────────
+
+enum ReportInclusion {
+  INCLUDED
+  EXCLUDED
+}
+
+model Invoice {
+  id                   String  @id @default(cuid())
+  organizationId       String
+  scanId               String
+  gmailMessageId       String
+  subject              String
+  sender               String
+  senderDomain         String?
+  company              String?
+  date                 DateTime?
+  amount               Float?
+  currency             String  @default("ILS")
+  classificationTier   String
+  classificationScore  Int     @default(0)
+  classificationSignals Json?
+  bodyText             String? @db.Text
+  bodyHtml             String? @db.Text
+  hasAttachment        Boolean @default(false)
+  attachmentPath       String?
+  notes                String?
+  reportStatus         ReportInclusion @default(INCLUDED)
+  createdAt            DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  scan         Scan         @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, gmailMessageId])
+  @@index([organizationId, classificationTier])
+  @@index([organizationId, company])
+  @@index([organizationId, date])
+  @@index([organizationId, reportStatus])
+  @@index([scanId])
+  @@map("invoices")
+}
+
+// ── Suppliers ──────────────────────────────────────────────────────────
+
+model Supplier {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  isRelevant     Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("suppliers")
+}
+
+// ── Exports ─────────────────────────────────────────────────────────────
+
+model Export {
+  id             String     @id @default(cuid())
+  organizationId String
+  format         ExportFormat
+  status         ExportStatus @default(PENDING)
+  invoiceCount   Int          @default(0)
+  progress       Int          @default(0)
+  progressMessage String?
+  filePath       String?
+  fileSize       Int?
+  errorMessage   String?
+  createdAt      DateTime     @default(now())
+  completedAt    DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("exports")
+}
+
+enum ExportFormat {
+  CSV
+  WORD
+  ZIP_SCREENSHOTS
+}
+
+enum ExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
