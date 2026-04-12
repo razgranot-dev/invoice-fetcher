@@ -22,6 +22,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   events: {
     async createUser({ user }) {
       // First sign-in: create a personal organization after the adapter persists the user
+      if (!user.id) return;
       try {
         const slug =
           (user.email?.split("@")[0] ?? "user")
@@ -46,7 +47,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async signIn({ user, account, isNewUser }) {
       // Store / refresh Gmail tokens AFTER sign-in is fully committed
       try {
-        if (account?.provider !== "google" || !account.access_token || !user.email) return;
+        if (account?.provider !== "google" || !account.access_token || !user.id || !user.email) return;
 
         const membership = await db.organizationMember.findFirst({
           where: { userId: user.id },
