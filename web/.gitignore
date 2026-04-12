@@ -6,4 +6,4 @@ node_modules/
 *.tsbuildinfo
 next-env.d.ts
 setup.ps1
-exports/
+/exports/

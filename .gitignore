@@ -3,9 +3,9 @@
 token.json
 credentials.json
 
-# Output files
-output/
-exports/
+# Output files (top-level only — don't match web/src/app/(app)/exports/)
+/output/
+/exports/
 
 # Python
 __pycache__/
