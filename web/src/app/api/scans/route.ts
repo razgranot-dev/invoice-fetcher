@@ -5,6 +5,7 @@ import { auth } from "@/lib/auth";
 import { createScan, getScans, updateScanStatus, updateScanProgress } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
+import { getDomainsForBrand } from "@/lib/data/suppliers";
 import { db } from "@/lib/db";
 import { dispatchScan } from "@/lib/worker";
 
@@ -127,7 +128,6 @@ export async function POST(req: NextRequest) {
       }
 
       // ── Scan-time quality filter ────────────────────────────────────
-      const INCLUDED_TIERS = new Set(["confirmed_invoice", "likely_invoice"]);
 
       function shouldPersist(inv: any): boolean {
         const tier = inv.classification_tier ?? "not_invoice";
@@ -163,9 +163,7 @@ export async function POST(req: NextRequest) {
           hasAttachment: (inv.attachments?.length ?? 0) > 0,
           attachmentPath: inv.saved_path || undefined,
           notes: inv.notes || undefined,
-          reportStatus: INCLUDED_TIERS.has(inv.classification_tier ?? "")
-            ? ("INCLUDED" as const)
-            : ("EXCLUDED" as const),
+          reportStatus: "INCLUDED" as const,
         }));
 
         // Insert new invoices (skipDuplicates for idempotency)
@@ -187,11 +185,37 @@ export async function POST(req: NextRequest) {
                 organizationId: orgId,
                 gmailMessageId: { in: chunk },
               },
-              data: { scanId: scan.id },
+              data: { scanId: scan.id, reportStatus: "INCLUDED" },
             });
             console.log(`[Scan ${scan.id}] re-associated chunk ${i}-${i + chunk.length}: ${reassocResult.count} rows`);
           }
         }
+      }
+
+      // ── Honour existing supplier exclusions ───────────────────────
+      // If the user previously unchecked a supplier, re-exclude its invoices
+      // so a re-scan doesn't silently re-include them.
+      const excludedSuppliers = await db.supplier.findMany({
+        where: { organizationId: orgId, isRelevant: false },
+        select: { name: true },
+      });
+      for (const { name } of excludedSuppliers) {
+        const domains = await getDomainsForBrand(orgId, name);
+        if (domains.length > 0) {
+          await db.invoice.updateMany({
+            where: { organizationId: orgId, scanId: scan.id, senderDomain: { in: domains } },
+            data: { reportStatus: "EXCLUDED" },
+          });
+        }
+        await db.invoice.updateMany({
+          where: {
+            organizationId: orgId,
+            scanId: scan.id,
+            company: { equals: name, mode: "insensitive" },
+            ...(domains.length > 0 ? { senderDomain: { notIn: domains } } : {}),
+          },
+          data: { reportStatus: "EXCLUDED" },
+        });
       }
 
       await updateScanStatus(orgId, scan.id, {

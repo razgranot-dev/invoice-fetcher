@@ -124,9 +124,11 @@ export default async function InvoicesPage({
     reportStatus: inv.reportStatus,
   }));
 
-  // ── Bug 3 fix: count from visible invoices only ───────────────────
+  // ── Count from visible invoices only ───────────────────────────────
+  // Treat null/missing reportStatus as INCLUDED (backwards compat for
+  // invoices created before the reportStatus fix).
   const includedCount = visibleInvoices.filter(
-    (inv) => inv.reportStatus === "INCLUDED"
+    (inv) => inv.reportStatus !== "EXCLUDED"
   ).length;
   const reviewCount = visibleInvoices.filter(
     (inv) => inv.reportStatus === "EXCLUDED"
