@@ -78,27 +78,39 @@ def _build_email_html(invoice: dict) -> str:
 </html>"""
 
 
+_PER_SCREENSHOT_TIMEOUT = 20  # hard cap per screenshot — kill and move on
+
+
 async def _render_single(page, html: str, output_path: str) -> tuple[bool, str | None]:
     """Render HTML to PNG using an existing Playwright page.
 
     Returns (True, None) on success, (False, reason) on failure.
+    Uses domcontentloaded (not networkidle) so external images/pixels don't block.
+    Hard-capped at _PER_SCREENSHOT_TIMEOUT seconds total.
     """
+    import asyncio
+
+    async def _do_render():
+        await page.set_content(html, wait_until="domcontentloaded", timeout=10000)
+        await page.screenshot(path=output_path, full_page=True, timeout=10000)
+
     try:
-        await page.set_content(html, wait_until="networkidle", timeout=15000)
-        await page.screenshot(path=output_path, full_page=True)
+        await asyncio.wait_for(_do_render(), timeout=_PER_SCREENSHOT_TIMEOUT)
         if os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
             return True, None
         return False, "Screenshot file was not created"
+    except asyncio.TimeoutError:
+        return False, f"Screenshot timed out after {_PER_SCREENSHOT_TIMEOUT}s"
     except Exception as e:
-        reason = str(e)
+        reason = str(e) or repr(e)
         if "Executable doesn't exist" in reason or "chromium" in reason.lower():
             reason = f"Chromium not installed: {reason}"
         elif "Timeout" in reason or "timeout" in reason:
-            reason = f"Render timeout (page took >15s to load)"
+            reason = f"Render timeout: {reason[:120]}"
         elif "net::ERR_" in reason:
-            reason = f"Network error loading resources: {reason}"
+            reason = f"Network error: {reason[:120]}"
         elif "Target closed" in reason or "closed" in reason.lower():
-            reason = f"Browser page crashed: {reason}"
+            reason = f"Page crashed: {reason[:120]}"
         return False, reason
 
 
@@ -279,6 +291,12 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
                     i + 1, len(invoices), invoice_id,
                     inv.get("sender", "?"), reason,
                 )
+                if reason and ("crashed" in reason.lower() or "closed" in reason.lower() or "timed out" in reason.lower()):
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    page = await browser.new_page(viewport={"width": 800, "height": 600})
 
         await page.close()
     finally:
@@ -345,6 +363,13 @@ async def generate_screenshots_with_progress(
                     i + 1, len(invoices), invoice_id,
                     inv.get("sender", "?"), reason,
                 )
+                # If the page crashed, create a fresh one for remaining screenshots
+                if reason and ("crashed" in reason.lower() or "closed" in reason.lower() or "timed out" in reason.lower()):
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    page = await browser.new_page(viewport={"width": 800, "height": 600})
 
             yield invoices
 
