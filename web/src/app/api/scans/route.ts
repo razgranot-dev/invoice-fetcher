@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
+import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { createScan, getScans, updateScanStatus, updateScanProgress } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
@@ -202,6 +203,10 @@ export async function POST(req: NextRequest) {
         progressMessage: `Complete — ${persistable.length} saved from ${result.total_messages} emails`,
         completedAt: new Date(),
       });
+
+      // Invalidate cached invoices page so new scan appears in dropdown
+      revalidatePath("/invoices");
+      revalidatePath("/scans");
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Worker dispatch failed";
       await updateScanStatus(orgId, scan.id, {

@@ -45,13 +45,14 @@ _INSTANT_DISQUALIFY_SUBJECT: list[str] = [
     "verify your account", "verify your identity", "verify your email",
     "confirm your email", "confirm your identity",
     "security alert", "critical security alert", "security advisory",
+    "\u05d4\u05ea\u05e8\u05d0\u05ea \u05d0\u05d1\u05d8\u05d7\u05d4",
     "sign-in attempt", "new sign-in", "suspicious sign-in", "unusual sign-in",
     "login attempt", "new login",
     "unusual activity", "suspicious activity",
     "password reset", "password changed",
     "two-factor", "2fa", "verification code",
     "account suspended", "account restricted", "account limitation",
-    "account access",
+    "account access", "account activity",
     # Device / Find My notifications
     "find my has been disabled", "has been disabled on",
     "find my iphone", "find my ipad", "find my mac",
@@ -95,6 +96,7 @@ _INSTANT_DISQUALIFY_SUBJECT: list[str] = [
     "onboarding", "get started with",
     # Subscription reminders (NOT yet charged — just warnings)
     "your subscription is expiring", "subscription is about to expire",
+    "subscription expiring", "subscription ending",
     "your trial ends", "your trial is ending",
     "don't lose your", "don't lose access",
     # Survey / feedback
@@ -129,11 +131,13 @@ _INSTANT_DISQUALIFY_SENDER: list[str] = [
 
 _VENDOR_NON_INVOICE_SUBJECTS: list[tuple[str, list[str]]] = [
     # Google — security alerts, account notices, service updates
+    # NOTE: "google workspace" and "google cloud" are NOT listed here because
+    # billing receipts from payments.google.com legitimately contain those terms.
     ("google.com", [
         "security alert", "critical security", "sign-in attempt",
         "new sign-in", "recovery email", "password changed",
-        "google one", "google ai", "gemini", "google cloud",
-        "google workspace", "storage", "your plan",
+        "google one", "google ai", "gemini",
+        "storage", "your plan",
         "account update", "verify your", "confirm your",
         "someone added you",
     ]),
@@ -147,12 +151,12 @@ _VENDOR_NON_INVOICE_SUBJECTS: list[tuple[str, list[str]]] = [
         "news", "blog", "what's new", "new feature",
         "check out", "introducing",
     ]),
-    # OpenAI — subscription warnings, product updates
+    # OpenAI — subscription warnings, product updates, marketing
     ("openai.com", [
         "access will end", "will expire", "action required",
         "usage limit", "api usage", "rate limit",
         "plus access", "plan change", "product update",
-        "new feature", "introducing",
+        "new feature", "introducing", "get updates",
     ]),
     # PayPal — account alerts vs actual receipts
     ("paypal.com", [
@@ -183,6 +187,14 @@ _VENDOR_NON_INVOICE_SUBJECTS: list[tuple[str, list[str]]] = [
         "memories", "on this day", "marketplace",
     ]),
     ("facebook.com", [
+        "someone commented", "someone liked", "someone replied",
+        "new login", "login attempt", "confirm your identity",
+        "security code", "update your info", "verify your",
+        "birthday", "friend request", "people you may know",
+        "new follower", "mentioned you", "tagged you",
+        "memories", "on this day", "marketplace",
+    ]),
+    ("meta.com", [
         "someone commented", "someone liked", "someone replied",
         "new login", "login attempt", "confirm your identity",
         "security code", "update your info", "verify your",
@@ -294,6 +306,9 @@ _SUBJECT_STRONG: list[tuple[str, int]] = [
     ("renewal receipt", 30),
     ("subscription renewed", 25),
     ("has been renewed", 20),
+    ("charge successful", 25),
+    ("successfully charged", 25),
+    ("you sent a payment", 25),
     ("your bill", 25),
     ("monthly bill", 25),
     ("billing summary", 25),
@@ -423,6 +438,7 @@ _INVOICE_SENDER_DOMAINS: dict[str, int] = {
     "lyft.com": 5,
     "wolt.com": 5,
     "bolt.eu": 5,
+    "gett.com": 5,
     "shopify.com": 5,
     "squarespace.com": 5,
     "dropbox.com": 5,
@@ -505,12 +521,11 @@ _NEGATIVE_SUBJECT: list[tuple[str, int]] = [
     ("service notification", -25),
     ("status update", -25),
     ("unsubscribe", -15),
-    # Google-specific non-invoice
+    # Google-specific non-invoice (NOT "google cloud"/"google workspace" —
+    # billing receipts from payments.google.com use those terms legitimately)
     ("google ai", -50),
     ("gemini advanced", -50),
     ("google one", -50),
-    ("google cloud", -40),
-    ("google workspace", -40),
     # Hebrew negative
     ("איפוס סיסמה", -50),
     ("אימות חשבון", -40),
@@ -527,7 +542,9 @@ _NEGATIVE_SUBJECT: list[tuple[str, int]] = [
 _NEGATIVE_SENDER_DOMAINS: dict[str, int] = {
     "github.com": -15,
     "googlecloud.com": -30,
-    "google.com": -15,
+    # google.com removed — payments.google.com is a legitimate invoice sender
+    # and the blanket -15 penalizes it; specific google subdomains are already
+    # handled by instant disqualify (accounts.google.com, notifications.google.com)
     "linkedin.com": -10,
     "sendgrid.net": -10,
     "intercom.io": -25,

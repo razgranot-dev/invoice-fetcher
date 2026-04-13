@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { FileText, Download } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
@@ -164,14 +165,16 @@ export default async function InvoicesPage({
         </div>
       </PageHeader>
 
-      <InvoiceFilters
-        companies={companies}
-        scans={scanList.map((s) => ({
-          ...s,
-          createdAt: s.createdAt.toISOString(),
-        }))}
-      />
-      <SupplierPanel suppliers={allSuppliers} />
+      <Suspense>
+        <InvoiceFilters
+          companies={companies}
+          scans={scanList.map((s) => ({
+            ...s,
+            createdAt: s.createdAt.toISOString(),
+          }))}
+        />
+        <SupplierPanel suppliers={allSuppliers} />
+      </Suspense>
 
       {visibleInvoices.length > 0 ? (
         <InvoiceList invoices={serialized} />
