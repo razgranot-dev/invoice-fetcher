@@ -15,6 +15,8 @@ import { requireOrganization } from "@/lib/session";
 import { getScans } from "@/lib/data/scans";
 import { getConnections } from "@/lib/data/connections";
 import { NewScanButton } from "./new-scan-button";
+import { LocalTime } from "@/components/shared/local-time";
+import { ScanProgress } from "./scan-progress";
 
 const statusConfig = {
   PENDING: { icon: Clock, label: "Pending", variant: "outline" as const },
@@ -83,21 +85,43 @@ export default async function ScansPage() {
                         ? scan.keywords.join(", ")
                         : "All keywords"}{" "}
                       &middot; {scan.daysBack} days &middot;{" "}
-                      {new Date(scan.createdAt).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
+                      <LocalTime date={scan.createdAt} />
                     </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0 ml-4">
-                  {scan.status === "COMPLETED" && (
-                    <span className="text-xs text-muted-foreground">
-                      {scan._count.invoices} invoices / {scan.totalMessages} msgs
-                    </span>
+                  {scan.status === "RUNNING" && (
+                    <ScanProgress scanId={scan.id} compact />
                   )}
+                  {scan.status === "COMPLETED" && (() => {
+                    const { included, excluded } = scan._reportCounts;
+                    const saved = included + excluded;
+                    const filteredOut = (scan.processedCount ?? 0) - saved;
+                    return (
+                      <span className="text-xs text-muted-foreground flex items-center gap-1.5">
+                        <span>{scan.totalMessages} scanned</span>
+                        <span className="text-muted-foreground/40">&middot;</span>
+                        {included > 0 && (
+                          <span className="text-emerald-600">{included} included</span>
+                        )}
+                        {excluded > 0 && (
+                          <>
+                            {included > 0 && <span className="text-muted-foreground/40">&middot;</span>}
+                            <span className="text-amber-600">{excluded} for review</span>
+                          </>
+                        )}
+                        {filteredOut > 0 && (
+                          <>
+                            <span className="text-muted-foreground/40">&middot;</span>
+                            <span className="text-muted-foreground/60">{filteredOut} filtered</span>
+                          </>
+                        )}
+                        {included === 0 && excluded === 0 && (
+                          <span>no invoices found</span>
+                        )}
+                      </span>
+                    );
+                  })()}
                   <Badge variant={config.variant}>
                     <StatusIcon
                       className={`h-3 w-3 mr-1 ${

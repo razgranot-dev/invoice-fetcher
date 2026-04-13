@@ -33,10 +33,10 @@ export function NewScanButton() {
 
       if (!res.ok) {
         alert(data.error || "Failed to create scan");
-      } else if (data.scan?.status === "FAILED") {
-        alert(data.scan.errorMessage || "Scan failed");
+        return;
       }
 
+      // Scan is now RUNNING in the background — refresh to show it
       setShowForm(false);
       router.refresh();
     } finally {

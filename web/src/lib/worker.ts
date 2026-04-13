@@ -66,7 +66,8 @@ export async function dispatchScan(
     keywords: string[];
     daysBack: number;
     unreadOnly: boolean;
-  }
+  },
+  onProgress?: (progress: number, message: string, stage: string) => Promise<void>
 ): Promise<WorkerScanResult> {
   const body: WorkerScanRequest = {
     access_token: connection.accessToken,
@@ -90,7 +91,71 @@ export async function dispatchScan(
     throw new Error(`Worker error ${res.status}: ${text}`);
   }
 
-  return res.json();
+  // Stream NDJSON, emit progress, return final result
+  let finalResult: WorkerScanResult | null = null;
+
+  if (res.body) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const data = JSON.parse(line);
+          if (data.result) {
+            finalResult = data.result;
+          }
+          if (data.progress != null && onProgress) {
+            await onProgress(data.progress, data.message ?? "", data.stage ?? "");
+          }
+        } catch {
+          // skip malformed lines
+        }
+      }
+    }
+
+    if (buffer.trim()) {
+      try {
+        const data = JSON.parse(buffer);
+        if (data.result) finalResult = data.result;
+        if (data.progress != null && onProgress) {
+          await onProgress(data.progress, data.message ?? "", data.stage ?? "");
+        }
+      } catch {
+        // skip
+      }
+    }
+  } else {
+    // Fallback: non-streaming
+    const text = await res.text();
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const data = JSON.parse(line);
+        if (data.result) finalResult = data.result;
+        if (data.progress != null && onProgress) {
+          await onProgress(data.progress, data.message ?? "", data.stage ?? "");
+        }
+      } catch {
+        // skip
+      }
+    }
+  }
+
+  if (!finalResult) {
+    throw new Error("Worker returned no final result");
+  }
+
+  return finalResult;
 }
 
 export interface ExportResult {

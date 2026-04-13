@@ -82,12 +82,16 @@ async def health():
 # ── Scan ─────────────────────────────────────────────────────────────────
 
 
-@app.post("/scan", response_model=ScanResult)
+@app.post("/scan")
 async def run_scan(req: ScanRequest):
-    """Execute a Gmail scan using the provided OAuth tokens."""
+    """Execute a Gmail scan with streaming NDJSON progress.
 
-    # Build credentials JSON for the connector
+    Emits lines of {progress, message, stage} as each email is processed.
+    Final line contains {progress: 100, result: {scan_id, total_messages, invoices, error}}.
+    """
     import json
+    from starlette.responses import StreamingResponse
+
     creds_dict = {
         "token": req.access_token,
         "refresh_token": req.refresh_token,
@@ -103,84 +107,116 @@ async def run_scan(req: ScanRequest):
     if not ok:
         raise HTTPException(status_code=401, detail=f"Gmail auth failed: {result}")
 
-    try:
-        # Search messages
-        msg_ids = connector.list_message_ids(
-            req.keywords, req.days_back, req.unread_only
-        )
+    async def _generate():
+        try:
+            yield json.dumps({"progress": 1, "message": "Searching inbox...", "stage": "search"}) + "\n"
 
-        if not msg_ids:
-            return ScanResult(
-                scan_id=req.scan_id, total_messages=0, invoices=[]
+            msg_ids = connector.list_message_ids(
+                req.keywords, req.days_back, req.unread_only
             )
 
-        # Process each message
-        body_parser = BodyParser()
-        att_handler = AttachmentHandler(base_output_dir="output/invoices")
-        results: list[dict] = []
+            total = len(msg_ids) if msg_ids else 0
 
-        for msg_id in msg_ids:
-            try:
-                msg = connector.get_message(msg_id)
-                if not msg:
-                    continue
+            if total == 0:
+                yield json.dumps({
+                    "progress": 100,
+                    "message": "No messages found",
+                    "stage": "done",
+                    "result": {"scan_id": req.scan_id, "total_messages": 0, "invoices": [], "error": None},
+                }) + "\n"
+                return
 
-                parsed = connector.parse_message(msg)
+            yield json.dumps({"progress": 3, "message": f"Found {total} emails to scan", "stage": "fetch"}) + "\n"
 
-                # Save attachments
-                saved_path = None
-                for att in parsed.get("attachments", []):
-                    if att.get("attachment_id"):
-                        att["data"] = connector.fetch_attachment_data(
-                            att["msg_id"], att["attachment_id"]
+            body_parser = BodyParser()
+            att_handler = AttachmentHandler(base_output_dir="output/invoices")
+            results: list[dict] = []
+
+            # Phase 1: Fetch & parse emails (3% – 70%)
+            for i, msg_id in enumerate(msg_ids):
+                try:
+                    msg = connector.get_message(msg_id)
+                    if not msg:
+                        continue
+
+                    parsed = connector.parse_message(msg)
+
+                    saved_path = None
+                    for att in parsed.get("attachments", []):
+                        if att.get("attachment_id"):
+                            att["data"] = connector.fetch_attachment_data(
+                                att["msg_id"], att["attachment_id"]
+                            )
+                        path = att_handler.save_attachment(
+                            att, parsed.get("sender", ""), parsed.get("date", "")
                         )
-                    path = att_handler.save_attachment(
-                        att, parsed.get("sender", ""), parsed.get("date", "")
+                        if path:
+                            saved_path = path
+                    parsed["saved_path"] = saved_path
+
+                    text = body_parser.extract_text(
+                        parsed.get("body_text", ""), parsed.get("body_html", "")
                     )
-                    if path:
-                        saved_path = path
-                parsed["saved_path"] = saved_path
+                    parsed["notes"] = (
+                        "\u05ea\u05d5\u05db\u05df \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05e0\u05de\u05e6\u05d0 \u05d1\u05d2\u05d5\u05e3 \u05d4\u05d4\u05d5\u05d3\u05e2\u05d4"
+                        if body_parser.looks_like_invoice(text)
+                        else ""
+                    )
 
-                # Parse body
-                text = body_parser.extract_text(
-                    parsed.get("body_text", ""), parsed.get("body_html", "")
-                )
-                parsed["notes"] = (
-                    "\u05ea\u05d5\u05db\u05df \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05e0\u05de\u05e6\u05d0 \u05d1\u05d2\u05d5\u05e3 \u05d4\u05d4\u05d5\u05d3\u05e2\u05d4"  # תוכן חשבונית נמצא בגוף ההודעה
-                    if body_parser.looks_like_invoice(text)
-                    else ""
-                )
+                    results.append(parsed)
+                except Exception as exc:
+                    logger.warning("Skipping message %s: %s", msg_id, exc)
 
-                results.append(parsed)
-            except Exception as exc:
-                logger.warning("Skipping message %s: %s", msg_id, exc)
-                continue
+                # Emit progress (outside try so it fires even on skip)
+                pct = 3 + int((i + 1) / total * 67)  # 3–70%
+                if total <= 50 or (i + 1) % 5 == 0 or (i + 1) == total:
+                    yield json.dumps({
+                        "progress": pct,
+                        "message": f"Reading email {i + 1}/{total}",
+                        "stage": "fetch",
+                    }) + "\n"
 
-        # Classify
-        classify_results(results)
+            # Phase 2: Classify (70–85%)
+            yield json.dumps({"progress": 72, "message": "Classifying results...", "stage": "classify"}) + "\n"
+            classify_results(results)
 
-        # Enrich with amounts
-        enriched = enrich_results(results)
+            # Phase 3: Enrich amounts (85–95%)
+            yield json.dumps({"progress": 87, "message": "Extracting amounts...", "stage": "enrich"}) + "\n"
+            enriched = enrich_results(results)
 
-        # Strip binary data before returning (keep body_html for screenshots)
-        for r in enriched:
-            r.pop("body_text", None)
-            for att in r.get("attachments", []):
-                att.pop("data", None)
+            # Strip binary data
+            for r in enriched:
+                r.pop("body_text", None)
+                for att in r.get("attachments", []):
+                    att.pop("data", None)
 
-        return ScanResult(
-            scan_id=req.scan_id,
-            total_messages=len(msg_ids),
-            invoices=enriched,
-        )
+            yield json.dumps({
+                "progress": 100,
+                "message": f"Complete \u2014 {len(enriched)} candidates from {total} emails",
+                "stage": "done",
+                "result": {
+                    "scan_id": req.scan_id,
+                    "total_messages": total,
+                    "invoices": enriched,
+                    "error": None,
+                },
+            }) + "\n"
 
-    except Exception as e:
-        return ScanResult(
-            scan_id=req.scan_id,
-            total_messages=0,
-            invoices=[],
-            error=str(e),
-        )
+        except Exception as e:
+            logger.error("Scan failed: %s", e)
+            yield json.dumps({
+                "progress": 100,
+                "message": str(e),
+                "stage": "error",
+                "result": {
+                    "scan_id": req.scan_id,
+                    "total_messages": 0,
+                    "invoices": [],
+                    "error": str(e),
+                },
+            }) + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
 
 # ── Export ───────────────────────────────────────────────────────────────

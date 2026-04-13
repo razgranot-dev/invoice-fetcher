@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { auth } from "@/lib/auth";
-import { createScan, getScans, updateScanStatus } from "@/lib/data/scans";
+import { createScan, getScans, updateScanStatus, updateScanProgress } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
 import { dispatchScan } from "@/lib/worker";
@@ -61,107 +62,104 @@ export async function POST(req: NextRequest) {
     unreadOnly,
   });
 
-  // Dispatch to Python worker
+  // Set scan to RUNNING immediately
   await updateScanStatus(orgId, scan.id, {
     status: "RUNNING",
     startedAt: new Date(),
   });
 
-  try {
-    const result = await dispatchScan(
-      scan.id,
-      {
-        accessToken: connection.accessToken,
-        refreshToken: connection.refreshToken,
-        tokenExpiry: connection.tokenExpiry,
-      },
-      { keywords, daysBack, unreadOnly }
-    );
+  // Run the heavy dispatch in the background so the POST returns immediately
+  after(async () => {
+    try {
+      const result = await dispatchScan(
+        scan.id,
+        {
+          accessToken: connection.accessToken,
+          refreshToken: connection.refreshToken,
+          tokenExpiry: connection.tokenExpiry,
+        },
+        { keywords, daysBack, unreadOnly },
+        async (progress, message) => {
+          await updateScanProgress(scan.id, progress, message);
+        }
+      );
 
-    if (result.error) {
+      if (result.error) {
+        await updateScanStatus(orgId, scan.id, {
+          status: "FAILED",
+          progress: 100,
+          progressMessage: result.error,
+          errorMessage: result.error,
+          completedAt: new Date(),
+        });
+        return;
+      }
+
+      // ── Scan-time quality filter ────────────────────────────────────
+      const INCLUDED_TIERS = new Set(["confirmed_invoice", "likely_invoice"]);
+
+      function shouldPersist(inv: any): boolean {
+        const tier = inv.classification_tier ?? "not_invoice";
+        if (tier !== "not_invoice") return true;
+        const score = inv.classification_score ?? 0;
+        if (score < 0) return false;
+        const signals: any[] = inv.classification_signals ?? [];
+        return signals.some((s: any) => s.score > 0);
+      }
+
+      const persistable = result.invoices.filter(shouldPersist);
+
+      if (persistable.length > 0) {
+        await bulkCreateInvoices(
+          orgId,
+          scan.id,
+          persistable.map((inv) => ({
+            gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            subject: inv.subject ?? "(no subject)",
+            sender: inv.sender ?? "",
+            senderDomain: extractDomain(inv.sender),
+            company: inv.company || undefined,
+            date: inv.date ? new Date(inv.date) : undefined,
+            amount: inv.amount ?? undefined,
+            currency: inv.currency ?? "ILS",
+            classificationTier: inv.classification_tier ?? "not_invoice",
+            classificationScore: inv.classification_score ?? 0,
+            classificationSignals: inv.classification_signals,
+            bodyHtml: inv.body_html || undefined,
+            hasAttachment: (inv.attachments?.length ?? 0) > 0,
+            attachmentPath: inv.saved_path || undefined,
+            notes: inv.notes || undefined,
+            reportStatus: INCLUDED_TIERS.has(inv.classification_tier ?? "")
+              ? ("INCLUDED" as const)
+              : ("EXCLUDED" as const),
+          }))
+        );
+      }
+
       await updateScanStatus(orgId, scan.id, {
-        status: "FAILED",
-        errorMessage: result.error,
+        status: "COMPLETED",
+        totalMessages: result.total_messages,
+        processedCount: result.invoices.length,
+        invoiceCount: persistable.length,
+        progress: 100,
+        progressMessage: `Complete — ${persistable.length} saved from ${result.total_messages} emails`,
         completedAt: new Date(),
       });
-      return NextResponse.json({ scan: { ...scan, status: "FAILED", errorMessage: result.error } });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Worker dispatch failed";
+      await updateScanStatus(orgId, scan.id, {
+        status: "FAILED",
+        progress: 100,
+        progressMessage: msg,
+        errorMessage: msg,
+        completedAt: new Date(),
+      });
     }
+  });
 
-    // ── Scan-time quality filter ──────────────────────────────────────
-    // Drop clear non-invoices before DB persistence.
-    // Borderline emails are saved as EXCLUDED (user can override).
-    const PERSIST_TIERS = new Set([
-      "confirmed_invoice",
-      "likely_invoice",
-      "possible_financial_email",
-    ]);
-    const INCLUDED_TIERS = new Set([
-      "confirmed_invoice",
-      "likely_invoice",
-    ]);
-
-    const persistable = result.invoices.filter(
-      (inv) => PERSIST_TIERS.has(inv.classification_tier ?? "")
-    );
-    const droppedCount = result.invoices.length - persistable.length;
-
-    if (persistable.length > 0) {
-      await bulkCreateInvoices(
-        orgId,
-        scan.id,
-        persistable.map((inv) => ({
-          gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          subject: inv.subject ?? "(no subject)",
-          sender: inv.sender ?? "",
-          senderDomain: extractDomain(inv.sender),
-          company: inv.company || undefined,
-          date: inv.date ? new Date(inv.date) : undefined,
-          amount: inv.amount ?? undefined,
-          currency: inv.currency ?? "ILS",
-          classificationTier: inv.classification_tier ?? "not_invoice",
-          classificationScore: inv.classification_score ?? 0,
-          classificationSignals: inv.classification_signals,
-          bodyHtml: inv.body_html || undefined,
-          hasAttachment: (inv.attachments?.length ?? 0) > 0,
-          attachmentPath: inv.saved_path || undefined,
-          notes: inv.notes || undefined,
-          reportStatus: INCLUDED_TIERS.has(inv.classification_tier ?? "")
-            ? ("INCLUDED" as const)
-            : ("EXCLUDED" as const),
-        }))
-      );
-    }
-
-    await updateScanStatus(orgId, scan.id, {
-      status: "COMPLETED",
-      totalMessages: result.total_messages,
-      processedCount: result.total_messages,
-      invoiceCount: persistable.length,
-      completedAt: new Date(),
-    });
-
-    return NextResponse.json(
-      {
-        scan: {
-          ...scan,
-          status: "COMPLETED",
-          totalMessages: result.total_messages,
-          invoiceCount: persistable.length,
-          filteredOut: droppedCount,
-        },
-      },
-      { status: 201 }
-    );
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : "Worker dispatch failed";
-    await updateScanStatus(orgId, scan.id, {
-      status: "FAILED",
-      errorMessage: msg,
-      completedAt: new Date(),
-    });
-    return NextResponse.json(
-      { error: msg, scan: { ...scan, status: "FAILED", errorMessage: msg } },
-      { status: 500 }
-    );
-  }
+  // Return immediately — scan is RUNNING, client will poll for progress
+  return NextResponse.json(
+    { scan: { ...scan, status: "RUNNING" } },
+    { status: 201 }
+  );
 }
