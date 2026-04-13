@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -13,7 +13,7 @@ import {
   Receipt,
   X,
 } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useEffect, useState } from "react";
 
 const FILTER_STORAGE_KEY = "invoice-filters";
 
@@ -33,37 +33,31 @@ interface MobileNavProps {
 
 export function MobileNav({ open, onClose }: MobileNavProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const searchParams = useSearchParams();
+  const [invoicesHref, setInvoicesHref] = useState("/invoices");
 
-  // When on /invoices, persist current filter params to localStorage
+  // On mount, restore saved invoice URL from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(FILTER_STORAGE_KEY);
+      if (saved) setInvoicesHref(`/invoices?${saved}`);
+    } catch {}
+  }, []);
+
+  // When on /invoices, persist current filter params and keep href in sync
   useEffect(() => {
     if (!pathname.startsWith("/invoices")) return;
     const qs = searchParams.toString();
     try {
       if (qs) {
         localStorage.setItem(FILTER_STORAGE_KEY, qs);
+        setInvoicesHref(`/invoices?${qs}`);
+      } else {
+        localStorage.removeItem(FILTER_STORAGE_KEY);
+        setInvoicesHref("/invoices");
       }
     } catch {}
   }, [pathname, searchParams]);
-
-  const handleNavClick = useCallback(
-    (e: React.MouseEvent, item: { href: string }) => {
-      if (item.href === "/invoices" && !pathname.startsWith("/invoices")) {
-        try {
-          const saved = localStorage.getItem(FILTER_STORAGE_KEY);
-          if (saved) {
-            e.preventDefault();
-            router.push(`/invoices?${saved}`);
-            onClose();
-            return;
-          }
-        } catch {}
-      }
-      onClose();
-    },
-    [pathname, router, onClose]
-  );
 
   if (!open) return null;
 
@@ -97,11 +91,12 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
         <nav className="space-y-0.5 px-2 pt-3">
           {navigation.map((item) => {
             const isActive = pathname.startsWith(item.href);
+            const href = item.href === "/invoices" ? invoicesHref : item.href;
             return (
               <Link
                 key={item.href}
-                href={item.href}
-                onClick={(e) => handleNavClick(e, item)}
+                href={href}
+                onClick={onClose}
                 className={cn(
                   "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors",
                   isActive

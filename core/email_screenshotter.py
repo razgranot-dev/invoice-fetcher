@@ -80,7 +80,7 @@ def _build_email_html(invoice: dict) -> str:
 </html>"""
 
 
-_PER_SCREENSHOT_TIMEOUT = 20  # hard cap per screenshot — kill and move on
+_PER_SCREENSHOT_TIMEOUT = 30  # hard cap per screenshot — kill and move on
 
 
 async def _render_single(page, html: str, output_path: str) -> tuple[bool, str | None]:
@@ -93,13 +93,20 @@ async def _render_single(page, html: str, output_path: str) -> tuple[bool, str |
     import asyncio
 
     async def _do_render():
-        await page.set_content(html, wait_until="domcontentloaded", timeout=10000)
+        await page.set_content(html, wait_until="domcontentloaded", timeout=15000)
         # Override email CSS that constrains height/clips content
         await page.add_style_tag(content=(
-            "html, body { height: auto !important; min-height: auto !important; "
+            "html, body { height: auto !important; min-height: unset !important; "
             "max-height: none !important; overflow: visible !important; }"
         ))
-        await page.screenshot(path=output_path, full_page=True, timeout=10000)
+        # Scroll to bottom then back to top to trigger lazy-loaded images
+        await page.evaluate("""
+            () => new Promise(resolve => {
+                window.scrollTo(0, document.body.scrollHeight);
+                setTimeout(() => { window.scrollTo(0, 0); resolve(); }, 500);
+            })
+        """)
+        await page.screenshot(path=output_path, full_page=True, timeout=15000)
 
     try:
         await asyncio.wait_for(_do_render(), timeout=_PER_SCREENSHOT_TIMEOUT)

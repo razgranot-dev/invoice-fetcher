@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -13,7 +13,7 @@ import {
   Receipt,
   ChevronLeft,
 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 
 const FILTER_STORAGE_KEY = "invoice-filters";
 
@@ -31,37 +31,33 @@ const secondaryNav = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [collapsed, setCollapsed] = useState(false);
+  const [invoicesHref, setInvoicesHref] = useState("/invoices");
+
+  // On mount, restore saved invoice URL from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(FILTER_STORAGE_KEY);
+      if (saved) setInvoicesHref(`/invoices?${saved}`);
+    } catch {}
+  }, []);
 
   // When on /invoices, persist current filter params to localStorage
+  // and keep the sidebar link href in sync
   useEffect(() => {
     if (!pathname.startsWith("/invoices")) return;
     const qs = searchParams.toString();
     try {
       if (qs) {
         localStorage.setItem(FILTER_STORAGE_KEY, qs);
+        setInvoicesHref(`/invoices?${qs}`);
+      } else {
+        localStorage.removeItem(FILTER_STORAGE_KEY);
+        setInvoicesHref("/invoices");
       }
     } catch {}
   }, [pathname, searchParams]);
-
-  const handleNavClick = useCallback(
-    (e: React.MouseEvent, item: { href: string }) => {
-      // For Invoices link: restore saved filter params when navigating from elsewhere
-      if (item.href === "/invoices" && !pathname.startsWith("/invoices")) {
-        try {
-          const saved = localStorage.getItem(FILTER_STORAGE_KEY);
-          if (saved) {
-            e.preventDefault();
-            router.push(`/invoices?${saved}`);
-            return;
-          }
-        } catch {}
-      }
-    },
-    [pathname, router]
-  );
 
   return (
     <aside
@@ -87,11 +83,11 @@ export function Sidebar() {
       <nav className="flex-1 space-y-0.5 px-2 pt-3">
         {navigation.map((item) => {
           const isActive = pathname.startsWith(item.href);
+          const href = item.href === "/invoices" ? invoicesHref : item.href;
           return (
             <Link
               key={item.href}
-              href={item.href}
-              onClick={(e) => handleNavClick(e, item)}
+              href={href}
               className={cn(
                 "flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
                 isActive
