@@ -149,9 +149,12 @@ def _find_chromium_executable():
     return None
 
 
+_BROWSER_LAUNCH_TIMEOUT = 30  # seconds — fail fast if Chromium can't start
+
+
 async def _get_browser():
     """Launch a Playwright browser. Raises with clear message if unavailable."""
-    import platform
+    import asyncio
 
     try:
         from playwright.async_api import async_playwright
@@ -167,10 +170,8 @@ async def _get_browser():
     else:
         logger.warning("Could not locate Chromium executable in standard paths")
 
-    # Windows needs --no-sandbox and --disable-gpu for headless worker processes
-    launch_args = []
-    if platform.system() == "Windows":
-        launch_args = ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
+    # Chromium sandbox fails in containers (Linux) and worker processes (Windows)
+    launch_args = ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
 
     pw = await async_playwright().start()
     try:
@@ -178,8 +179,19 @@ async def _get_browser():
         if exe_path:
             launch_kwargs["executable_path"] = exe_path
 
-        browser = await pw.chromium.launch(**launch_kwargs)
+        browser = await asyncio.wait_for(
+            pw.chromium.launch(**launch_kwargs),
+            timeout=_BROWSER_LAUNCH_TIMEOUT,
+        )
         return pw, browser
+    except asyncio.TimeoutError:
+        await pw.stop()
+        raise RuntimeError(
+            f"Screenshot engine failed to start: browser launch timed out after {_BROWSER_LAUNCH_TIMEOUT}s\n"
+            f"Executable path: {exe_path or '(not found)'}\n"
+            f"This usually means Chromium is not installed or cannot run in this environment.\n"
+            f"Fix: python -m playwright install --with-deps chromium"
+        )
     except Exception as e:
         await pw.stop()
         # Build a detailed error — str(e) is often empty for Playwright errors
@@ -189,7 +201,7 @@ async def _get_browser():
 
         if "Executable doesn't exist" in msg or "Executable doesn't exist" in exc_repr:
             raise RuntimeError(
-                f"Chromium not installed. Run: python -m playwright install chromium\n"
+                f"Chromium not installed. Run: python -m playwright install --with-deps chromium\n"
                 f"Looked for executable at: {exe_path or '(auto-detect failed)'}\n"
                 f"Original error: {exc_repr}"
             )
@@ -207,10 +219,10 @@ async def _get_browser():
 
         detail = " | ".join(detail_parts) if detail_parts else f"({exc_type} with no message)"
         raise RuntimeError(
-            f"Browser launch failed ({exc_type}): {detail}\n"
+            f"Screenshot engine failed to start ({exc_type}): {detail}\n"
             f"Executable path: {exe_path or '(not found)'}\n"
             f"Launch args: {launch_args}\n"
-            f"Fix: python -m playwright install chromium"
+            f"Fix: python -m playwright install --with-deps chromium"
         )
 
 

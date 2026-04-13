@@ -231,8 +231,12 @@ async def export_word(req: ExportRequest):
                 except Exception as exc:
                     yield _json.dumps({"progress": 70, "message": f"Screenshots skipped: {exc}"}) + "\n"
             except Exception as e:
-                logger.warning("Screenshot generation failed: %s", e)
-                yield _json.dumps({"progress": 70, "message": f"Some screenshots failed: {e}"}) + "\n"
+                error_str = str(e) or repr(e)
+                logger.warning("Screenshot generation failed: %s", error_str)
+                if "failed to start" in error_str.lower() or "timed out" in error_str.lower():
+                    yield _json.dumps({"progress": 70, "message": f"Screenshot engine failed to start — continuing without screenshots. ({error_str[:200]})"}) + "\n"
+                else:
+                    yield _json.dumps({"progress": 70, "message": f"Screenshots failed: {error_str[:200]}"}) + "\n"
 
             if screenshot_failures:
                 summary = f"{len(screenshot_failures)} screenshot(s) failed"
@@ -303,8 +307,12 @@ async def export_screenshots_zip(req: ExportRequest):
                 yield _json.dumps({"progress": pct, "message": f"Screenshot {i + 1}/{total}"}) + "\n"
                 i += 1
         except Exception as e:
-            logger.warning("Screenshot generation error: %s", e)
-            yield _json.dumps({"progress": 80, "message": f"Some screenshots failed: {e}"}) + "\n"
+            error_str = str(e) or repr(e)
+            logger.warning("Screenshot generation error: %s", error_str)
+            if "failed to start" in error_str.lower() or "timed out" in error_str.lower():
+                yield _json.dumps({"progress": 80, "message": f"Screenshot engine failed to start — export will complete without screenshots. ({error_str[:200]})"}) + "\n"
+            else:
+                yield _json.dumps({"progress": 80, "message": f"Screenshots failed: {error_str[:200]}"}) + "\n"
 
         # Classify results AFTER all screenshots are done (covers cached PNGs too)
         succeeded = []
