@@ -1,9 +1,11 @@
 "use client";
 
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { Search, Filter, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
+
+const FILTER_STORAGE_KEY = "invoice-filters";
 
 interface ScanOption {
   id: string;
@@ -20,7 +22,40 @@ interface InvoiceFiltersProps {
 
 export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
+  const restoredRef = useRef(false);
+
+  // On first mount, if URL has no filter params, restore from localStorage
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+
+    const hasParams = searchParams.has("search") || searchParams.has("tier")
+      || searchParams.has("company") || searchParams.has("report")
+      || searchParams.has("scan");
+
+    if (!hasParams) {
+      try {
+        const saved = localStorage.getItem(FILTER_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          const params = new URLSearchParams();
+          for (const [k, v] of Object.entries(parsed)) {
+            if (v && typeof v === "string") params.set(k, v);
+          }
+          const qs = params.toString();
+          if (qs) {
+            router.replace(`${pathname}?${qs}`);
+            return;
+          }
+        }
+      } catch {
+        // ignore corrupt localStorage
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [search, setSearch] = useState(searchParams.get("search") ?? "");
   const [showFilters, setShowFilters] = useState(false);
 
@@ -28,6 +63,24 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
   const currentCompany = searchParams.get("company");
   const currentReport = searchParams.get("report") ?? "";
   const currentScan = searchParams.get("scan") ?? "";
+
+  // Persist filter state to localStorage whenever URL params change
+  useEffect(() => {
+    const state: Record<string, string> = {};
+    for (const key of ["search", "tier", "company", "report", "scan"]) {
+      const val = searchParams.get(key);
+      if (val) state[key] = val;
+    }
+    try {
+      if (Object.keys(state).length > 0) {
+        localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(state));
+      } else {
+        localStorage.removeItem(FILTER_STORAGE_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }, [searchParams]);
 
   const updateParams = useCallback(
     (updates: Record<string, string | null>) => {
@@ -51,6 +104,7 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
 
   const clearAll = () => {
     setSearch("");
+    try { localStorage.removeItem(FILTER_STORAGE_KEY); } catch {}
     router.push("/invoices");
   };
 

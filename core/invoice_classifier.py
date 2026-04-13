@@ -52,12 +52,26 @@ _INSTANT_DISQUALIFY_SUBJECT: list[str] = [
     "two-factor", "2fa", "verification code",
     "account suspended", "account restricted", "account limitation",
     "account access",
+    # Device / Find My notifications
+    "find my has been disabled", "has been disabled on",
+    "find my iphone", "find my ipad", "find my mac",
+    # Failed payments / billing problems — NOT receipts
+    "billing problem", "payment problem",
+    "was unsuccessful", "payment unsuccessful",
+    "please update your payment", "update your payment method",
+    "payment method declined", "card declined", "card was declined",
+    "payment failed", "charge failed", "transaction failed",
+    "past due", "overdue payment",
     # Marketing & newsletters
     "latest updates", "updates across", "this week in",
     "news from", "tips & tricks", "tips and tricks", "tips for",
     "blog post", "we thought you'd like", "check out our",
     "newsletter", "weekly digest", "monthly digest",
-    "you're receiving this because",
+    "keep growing", "grow your",
+    # Policy / legal updates
+    "privacy policy", "terms of service", "terms of use",
+    "we've updated our", "we have updated our",
+    "user agreement", "policy update",
     # Ride-hailing non-receipts
     "your driver is arriving", "your driver is on the way",
     "rate your trip", "rate your ride",
@@ -75,10 +89,10 @@ _INSTANT_DISQUALIFY_SUBJECT: list[str] = [
     # Service notifications
     "system maintenance", "scheduled maintenance",
     "incident report", "outage",
-    # Onboarding (never invoices)
+    # Onboarding / marketing (never invoices)
     "welcome to", "getting started", "you're all set",
     "complete your setup", "set up your", "welcome aboard",
-    "onboarding",
+    "onboarding", "get started with",
     # Subscription reminders (NOT yet charged — just warnings)
     "your subscription is expiring", "subscription is about to expire",
     "your trial ends", "your trial is ending",
@@ -466,6 +480,23 @@ _NEGATIVE_SUBJECT: list[tuple[str, int]] = [
     ("your account has been", -20),
     ("account created", -25),
     ("your free", -25),
+    # Failed / unsuccessful payments (NOT receipts)
+    ("unsuccessful", -60),
+    ("was unsuccessful", -60),
+    ("payment failed", -60),
+    ("charge failed", -60),
+    ("billing problem", -60),
+    ("payment problem", -60),
+    ("please update your payment", -60),
+    ("update your payment method", -60),
+    ("card declined", -60),
+    ("past due", -50),
+    # Policy / legal
+    ("privacy policy", -50),
+    ("terms of service", -50),
+    ("terms of use", -50),
+    ("we've updated our", -50),
+    ("we have updated our", -50),
     # Mild alerts
     ("alert:", -10),
     ("action required", -5),
@@ -559,7 +590,12 @@ def _body_has_billing_detail(body_html: str, body_text: str) -> bool:
 
 
 def is_screenshot_worthy(invoice: dict[str, Any]) -> tuple[bool, str]:
-    """Determine if an invoice merits a screenshot for export."""
+    """Determine if an invoice merits a screenshot for export.
+
+    Confirmed and likely invoices ALWAYS get a screenshot — the classifier
+    already validated they represent real transactions, so body-length
+    or billing-detail checks should not block them.
+    """
     tier = invoice.get("classification_tier", "")
 
     if not tier:
@@ -571,30 +607,7 @@ def is_screenshot_worthy(invoice: dict[str, Any]) -> tuple[bool, str]:
     if tier == TIER_POSSIBLE:
         return False, "skipped: insufficient invoice content"
 
-    body_html = invoice.get("body_html") or ""
-    body_text = invoice.get("body_text") or ""
-    content = body_text or re.sub(r"<[^>]+>", " ", body_html)
-    content_stripped = re.sub(r"\s+", " ", content).strip()
-
-    if len(content_stripped) < 100:
-        return False, "skipped: email body too short for meaningful screenshot"
-
-    if tier == TIER_LIKELY:
-        has_amount = invoice.get("amount") is not None
-        has_attachment = bool(
-            invoice.get("has_attachment")
-            or invoice.get("saved_path")
-            or any(
-                a.get("filename", "").lower().endswith(".pdf")
-                for a in (invoice.get("attachments") or [])
-            )
-        )
-        if not has_amount and not has_attachment:
-            return False, "skipped: no billing details found"
-
-    if not _body_has_billing_detail(body_html, body_text):
-        return False, "skipped: no meaningful billing details in email body"
-
+    # confirmed_invoice and likely_invoice always qualify
     return True, ""
 
 
@@ -609,7 +622,8 @@ def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
     body_html = (email_data.get("body_html") or "").strip()
     attachments = email_data.get("attachments") or []
 
-    subject_lower = subject.lower()
+    # Normalize smart/curly quotes to straight quotes for matching
+    subject_lower = subject.lower().replace("\u2018", "'").replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
     sender_lower = sender.lower()
     body = body_text or re.sub(r'<[^>]+>', ' ', body_html)
     body_lower = body.lower()
