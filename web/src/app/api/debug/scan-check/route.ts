@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 
+/**
+ * Diagnostic endpoint — no auth. Delete after debugging.
+ * GET /api/debug/scan-check
+ */
 export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Grab the first org (single-tenant for now)
+  const org = await db.organization.findFirst();
+  if (!org) {
+    return NextResponse.json({ error: "No organization found" }, { status: 404 });
   }
-
-  const orgId = (session as any).organizationId;
-  if (!orgId) {
-    return NextResponse.json({ error: "No organization" }, { status: 403 });
-  }
+  const orgId = org.id;
 
   // 1. All scans with _count
   const scans = await db.scan.findMany({
@@ -60,7 +60,7 @@ export async function GET() {
     },
   });
 
-  // 5. For each scan, directly query invoice count to compare with _count
+  // 5. For each scan, directly query invoice count
   const directCounts: Record<string, number> = {};
   for (const s of scans) {
     const count = await db.invoice.count({

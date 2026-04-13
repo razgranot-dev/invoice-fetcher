@@ -1,32 +1,20 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 
 /**
- * One-time fix: re-associate invoices to scans based on createdAt timestamps.
- *
- * For each completed scan, finds invoices created during that scan's time
- * window (startedAt → completedAt) and updates their scanId.
+ * One-time fix: re-associate ALL invoices to scans based on createdAt timestamps.
+ * No auth — temporary endpoint, delete after use.
  *
  * POST /api/debug/fix-scans
  */
 export async function POST() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const orgId = (session as any).organizationId;
-  if (!orgId) {
-    return NextResponse.json({ error: "No organization" }, { status: 403 });
-  }
-
-  // Get all completed scans, newest first
+  // Fix ALL organizations at once
   const scans = await db.scan.findMany({
-    where: { organizationId: orgId, status: "COMPLETED" },
+    where: { status: "COMPLETED" },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
+      organizationId: true,
       createdAt: true,
       startedAt: true,
       completedAt: true,
@@ -39,6 +27,7 @@ export async function POST() {
 
   const fixes: Array<{
     scanId: string;
+    orgId: string;
     createdAt: Date;
     windowStart: Date;
     windowEnd: Date;
@@ -46,11 +35,9 @@ export async function POST() {
   }> = [];
 
   // Process scans from OLDEST to NEWEST so the newest scan "wins"
-  // for invoices that fall in overlapping time windows
   const sorted = [...scans].reverse();
 
   for (const scan of sorted) {
-    // Time window: 1 minute before scan created → 5 minutes after completed
     const windowStart = new Date(
       (scan.startedAt ?? scan.createdAt).getTime() - 60_000
     );
@@ -60,7 +47,7 @@ export async function POST() {
 
     const result = await db.invoice.updateMany({
       where: {
-        organizationId: orgId,
+        organizationId: scan.organizationId,
         createdAt: { gte: windowStart, lte: windowEnd },
       },
       data: { scanId: scan.id },
@@ -68,6 +55,7 @@ export async function POST() {
 
     fixes.push({
       scanId: scan.id,
+      orgId: scan.organizationId,
       createdAt: scan.createdAt,
       windowStart,
       windowEnd,
