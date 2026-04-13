@@ -44,7 +44,7 @@ export async function GET() {
   const validScanIds = new Set(scans.map((s) => s.id));
   const orphanedGroups = byScanId.filter((g) => !validScanIds.has(g.scanId));
 
-  // 4. Sample invoices — first 5 per scan
+  // 4. Sample invoices
   const sampleInvoices = await db.invoice.findMany({
     where: { organizationId: orgId },
     orderBy: { createdAt: "desc" },

@@ -51,7 +51,6 @@ export async function POST() {
 
   for (const scan of sorted) {
     // Time window: 1 minute before scan created → 5 minutes after completed
-    // (generous buffer for clock skew and async processing)
     const windowStart = new Date(
       (scan.startedAt ?? scan.createdAt).getTime() - 60_000
     );
@@ -76,7 +75,6 @@ export async function POST() {
     });
   }
 
-  // Summary
   const totalUpdated = fixes.reduce((sum, f) => sum + f.updatedCount, 0);
 
   return NextResponse.json({
