@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { MobileNav } from "@/components/layout/mobile-nav";
@@ -10,11 +10,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar />
-      <MobileNav
-        open={mobileNavOpen}
-        onClose={() => setMobileNavOpen(false)}
-      />
+      <Suspense>
+        <Sidebar />
+        <MobileNav
+          open={mobileNavOpen}
+          onClose={() => setMobileNavOpen(false)}
+        />
+      </Suspense>
       <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar onMenuClick={() => setMobileNavOpen(true)} />
         <main className="flex-1 overflow-y-auto">
