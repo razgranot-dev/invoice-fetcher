@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { requireOrganization } from "@/lib/session";
-import { getInvoices, getCompanyList } from "@/lib/data/invoices";
+import { getInvoices, getCompanyList, getScanListForFilter } from "@/lib/data/invoices";
 import { getSuppliers } from "@/lib/data/suppliers";
 import { InvoiceFilters } from "./filters";
 import { SupplierPanel } from "./supplier-panel";
@@ -18,19 +18,22 @@ export default async function InvoicesPage({
     tier?: string;
     company?: string;
     report?: string;
+    scan?: string;
   }>;
 }) {
   const { organizationId } = await requireOrganization();
   const params = await searchParams;
-  const [invoices, companies, suppliers] = await Promise.all([
+  const [invoices, companies, suppliers, scanList] = await Promise.all([
     getInvoices(organizationId, {
       search: params.search,
       tier: params.tier,
       company: params.company,
       reportStatus: params.report,
+      scanId: params.scan || undefined,
     }),
     getCompanyList(organizationId),
     getSuppliers(organizationId),
+    getScanListForFilter(organizationId),
   ]);
 
   // Exports always use INCLUDED only
@@ -38,6 +41,7 @@ export default async function InvoicesPage({
   if (params.search) exportQuery.set("search", params.search);
   if (params.tier) exportQuery.set("tier", params.tier);
   if (params.company) exportQuery.set("company", params.company);
+  if (params.scan) exportQuery.set("scanId", params.scan);
   exportQuery.set("reportStatus", "INCLUDED");
   const exportUrl = `/api/invoices/export?${exportQuery.toString()}`;
 
@@ -51,18 +55,23 @@ export default async function InvoicesPage({
     currency: inv.currency,
     date: inv.date ? new Date(inv.date).toISOString() : null,
     classificationTier: inv.classificationTier,
+    classificationScore: inv.classificationScore,
+    hasAttachment: inv.hasAttachment,
     reportStatus: inv.reportStatus,
   }));
 
   const includedCount = invoices.filter(
     (inv) => inv.reportStatus === "INCLUDED"
   ).length;
+  const reviewCount = invoices.filter(
+    (inv) => inv.reportStatus === "EXCLUDED"
+  ).length;
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Invoices"
-        description={`${invoices.length} invoices found \u00b7 ${includedCount} in report`}
+        description={`${invoices.length} results \u00b7 ${includedCount} included${reviewCount > 0 ? ` \u00b7 ${reviewCount} for review` : ""}`}
       >
         <div className="flex gap-2">
           {includedCount > 0 ? (
@@ -83,6 +92,7 @@ export default async function InvoicesPage({
               search: params.search,
               tier: params.tier,
               company: params.company,
+              scanId: params.scan,
               reportStatus: "INCLUDED",
             }}
             disabled={includedCount === 0}
@@ -90,7 +100,13 @@ export default async function InvoicesPage({
         </div>
       </PageHeader>
 
-      <InvoiceFilters companies={companies} />
+      <InvoiceFilters
+        companies={companies}
+        scans={scanList.map((s) => ({
+          ...s,
+          createdAt: s.createdAt.toISOString(),
+        }))}
+      />
       <SupplierPanel suppliers={suppliers} />
 
       {invoices.length > 0 ? (

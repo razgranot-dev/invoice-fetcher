@@ -156,7 +156,9 @@ def create_invoice_report(
                 run.font.size = Pt(9)
 
     companies = set(r.get("company") for r in rows if r.get("company"))
-    top_tier = max(tiers, key=tiers.get) if tiers else "\u2014"
+    # Exclude "not_invoice" from the top-tier summary — it's noise
+    relevant_tiers = {k: v for k, v in tiers.items() if k != "not_invoice"}
+    top_tier = max(relevant_tiers, key=relevant_tiers.get) if relevant_tiers else (max(tiers, key=tiers.get) if tiers else "\u2014")
 
     values = [
         str(len(rows)),

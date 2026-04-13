@@ -243,6 +243,27 @@ async function readNdjsonStream(
   return { file: fileData, failures, failedCount: failures?.length };
 }
 
+/** Extract a display-friendly company name from sender for export fallback */
+function companyFromSender(sender: unknown): string {
+  if (!sender || typeof sender !== "string") return "";
+  // Try "Display Name <email>" format
+  const m = sender.match(/^(.+?)\s*</);
+  if (m) {
+    const name = m[1].replace(/^["']|["']$/g, "").trim();
+    if (name && !name.includes("@") && name.length > 1) return name;
+  }
+  // Fall back to domain brand
+  const dm = sender.match(/@([^>]+)/);
+  if (dm) {
+    const parts = dm[1].split(".");
+    const brand = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+    if (brand && brand.length >= 2) {
+      return brand.charAt(0).toUpperCase() + brand.slice(1);
+    }
+  }
+  return "";
+}
+
 export async function dispatchWordExport(
   invoices: Array<Record<string, unknown>>,
   organizationName: string,
@@ -251,7 +272,7 @@ export async function dispatchWordExport(
 ): Promise<ExportResult> {
   const mapped = invoices.map((inv) => ({
     id: inv.id ?? "",
-    company: inv.company ?? "",
+    company: (inv.company as string) || companyFromSender(inv.sender),
     subject: inv.subject ?? "",
     sender: inv.sender ?? "",
     amount: inv.amount ?? null,
@@ -294,7 +315,7 @@ export async function dispatchScreenshotZip(
 ): Promise<ExportResult> {
   const mapped = invoices.map((inv) => ({
     id: inv.id ?? "",
-    company: inv.company ?? "",
+    company: (inv.company as string) || companyFromSender(inv.sender),
     subject: inv.subject ?? "",
     sender: inv.sender ?? "",
     amount: inv.amount ?? null,

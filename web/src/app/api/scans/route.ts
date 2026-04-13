@@ -9,11 +9,40 @@ import { dispatchScan } from "@/lib/worker";
 /** Extract clean domain from an email like "Name <user@domain.com>" or "user@domain.com" */
 function extractDomain(sender?: string): string | undefined {
   if (!sender) return undefined;
-  // Extract email from "Display Name <email@domain.com>" format
   const match = sender.match(/<([^>]+)>/) || sender.match(/[\w.+-]+@[\w.-]+/);
   const email = match ? match[1] || match[0] : sender;
   const parts = email.split("@");
   return parts.length > 1 ? parts[1].replace(/[^a-zA-Z0-9.-]/g, "") : undefined;
+}
+
+/** Extract company/supplier name from sender.
+ *  Priority: display name from "Company Name <email>" → cleaned domain brand.
+ *  Strips common noise words like "noreply", "billing", "info".
+ */
+function extractCompany(sender?: string): string | undefined {
+  if (!sender) return undefined;
+
+  // Try display name from "Company Name <email>" format
+  const nameMatch = sender.match(/^(.+?)\s*</);
+  if (nameMatch) {
+    const name = nameMatch[1].replace(/^["']|["']$/g, "").trim();
+    // Skip if the display name is just an email address
+    if (name && !name.includes("@") && name.length > 1) {
+      return name;
+    }
+  }
+
+  // Fall back to domain brand name
+  const domain = extractDomain(sender);
+  if (!domain) return undefined;
+
+  // Strip subdomains and TLD to get brand: "billing.hostinger.com" → "hostinger"
+  const parts = domain.split(".");
+  if (parts.length < 2) return undefined;
+  // Take the second-to-last part (brand), capitalize first letter
+  const brand = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+  if (!brand || brand.length < 2) return undefined;
+  return brand.charAt(0).toUpperCase() + brand.slice(1);
 }
 
 export async function GET() {
@@ -100,11 +129,17 @@ export async function POST(req: NextRequest) {
 
       function shouldPersist(inv: any): boolean {
         const tier = inv.classification_tier ?? "not_invoice";
+        // confirmed/likely/possible always persist
         if (tier !== "not_invoice") return true;
+        // not_invoice: only persist if score shows real invoice evidence
+        // (sender domain alone is not enough — need subject/body/attachment signal)
         const score = inv.classification_score ?? 0;
-        if (score < 0) return false;
+        if (score < 5) return false;
         const signals: any[] = inv.classification_signals ?? [];
-        return signals.some((s: any) => s.score > 0);
+        const hasContentSignal = signals.some((s: any) =>
+          s.score > 0 && s.signal !== "sender_invoice_domain"
+        );
+        return hasContentSignal;
       }
 
       const persistable = result.invoices.filter(shouldPersist);
@@ -118,7 +153,7 @@ export async function POST(req: NextRequest) {
             subject: inv.subject ?? "(no subject)",
             sender: inv.sender ?? "",
             senderDomain: extractDomain(inv.sender),
-            company: inv.company || undefined,
+            company: inv.company || extractCompany(inv.sender) || undefined,
             date: inv.date ? new Date(inv.date) : undefined,
             amount: inv.amount ?? undefined,
             currency: inv.currency ?? "ILS",

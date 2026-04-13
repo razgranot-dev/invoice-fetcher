@@ -5,11 +5,20 @@ import { Search, Filter, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useCallback } from "react";
 
-interface InvoiceFiltersProps {
-  companies: Array<{ name: string; count: number }>;
+interface ScanOption {
+  id: string;
+  createdAt: string | Date;
+  totalMessages: number;
+  invoiceCount: number;
+  daysBack: number;
 }
 
-export function InvoiceFilters({ companies }: InvoiceFiltersProps) {
+interface InvoiceFiltersProps {
+  companies: Array<{ name: string; count: number }>;
+  scans: ScanOption[];
+}
+
+export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [search, setSearch] = useState(searchParams.get("search") ?? "");
@@ -18,6 +27,7 @@ export function InvoiceFilters({ companies }: InvoiceFiltersProps) {
   const currentTier = searchParams.get("tier");
   const currentCompany = searchParams.get("company");
   const currentReport = searchParams.get("report") ?? "";
+  const currentScan = searchParams.get("scan") ?? "";
 
   const updateParams = useCallback(
     (updates: Record<string, string | null>) => {
@@ -45,7 +55,7 @@ export function InvoiceFilters({ companies }: InvoiceFiltersProps) {
   };
 
   const hasFilters =
-    currentTier || currentCompany || currentReport || searchParams.get("search");
+    currentTier || currentCompany || currentReport || currentScan || searchParams.get("search");
 
   return (
     <div className="space-y-3">
@@ -100,6 +110,33 @@ export function InvoiceFilters({ companies }: InvoiceFiltersProps) {
 
       {showFilters && (
         <div className="rounded-lg border border-border bg-card p-4 flex flex-wrap gap-4 animate-in">
+          {/* Scan filter */}
+          {scans.length > 0 && (
+            <div>
+              <label className="text-xs font-medium text-muted-foreground block mb-1.5">
+                Scan
+              </label>
+              <select
+                value={currentScan}
+                onChange={(e) =>
+                  updateParams({ scan: e.target.value || null })
+                }
+                className="rounded-md border border-border bg-muted/30 px-2.5 py-1 text-xs outline-none"
+              >
+                <option value="">All scans</option>
+                {scans.map((s) => {
+                  const d = new Date(s.createdAt);
+                  const label = `${d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })} — ${s.invoiceCount} invoices / ${s.totalMessages} emails`;
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {label}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          )}
+
           {/* Report inclusion filter */}
           <div>
             <label className="text-xs font-medium text-muted-foreground block mb-1.5">
@@ -108,8 +145,8 @@ export function InvoiceFilters({ companies }: InvoiceFiltersProps) {
             <div className="flex gap-1.5 flex-wrap">
               {[
                 { value: "", label: "All" },
-                { value: "INCLUDED", label: "In Report" },
-                { value: "EXCLUDED", label: "Excluded" },
+                { value: "INCLUDED", label: "Included" },
+                { value: "EXCLUDED", label: "For Review" },
               ].map((opt) => (
                 <button
                   key={opt.value}

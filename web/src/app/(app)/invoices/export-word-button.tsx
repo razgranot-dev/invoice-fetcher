@@ -6,7 +6,7 @@ import { FileText, Loader2, Camera, CheckCircle2, Images } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface ExportWordButtonProps {
-  filters: { search?: string; tier?: string; company?: string; reportStatus?: string };
+  filters: { search?: string; tier?: string; company?: string; scanId?: string; reportStatus?: string };
   disabled?: boolean;
 }
 

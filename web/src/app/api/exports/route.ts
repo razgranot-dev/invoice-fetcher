@@ -25,7 +25,9 @@ export async function GET() {
   }
 
   const exports = await getExports(orgId);
-  return NextResponse.json({ exports });
+  return NextResponse.json({ exports }, {
+    headers: { "Cache-Control": "no-store, max-age=0" },
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -53,9 +55,22 @@ export async function POST(req: NextRequest) {
 
   // Query invoices matching filters — default to INCLUDED only for exports
   if (!filters.reportStatus) filters.reportStatus = "INCLUDED";
-  const invoices = await getInvoices(orgId, filters, 10000);
+  const invoices = await getInvoices(orgId, {
+    search: filters.search,
+    tier: filters.tier,
+    company: filters.company,
+    scanId: filters.scanId,
+    reportStatus: filters.reportStatus,
+  }, 10000);
 
-  if (invoices.length === 0) {
+  // Only confirmed + likely invoices go into the main export.
+  // possible_financial_email and not_invoice stay in review flows only.
+  const EXPORT_TIERS = new Set(["confirmed_invoice", "likely_invoice"]);
+  const exportable = invoices.filter(
+    (inv) => EXPORT_TIERS.has(inv.classificationTier)
+  );
+
+  if (exportable.length === 0) {
     return NextResponse.json(
       { error: "No invoices match the current filters" },
       { status: 400 }
@@ -71,7 +86,7 @@ export async function POST(req: NextRequest) {
   // Create export record
   const exp = await createExport(orgId, {
     format,
-    invoiceCount: invoices.length,
+    invoiceCount: exportable.length,
   });
 
   // Process async — response returns immediately
@@ -88,13 +103,13 @@ export async function POST(req: NextRequest) {
 
       if (format === "ZIP_SCREENSHOTS") {
         result = await dispatchScreenshotZip(
-          invoices as unknown as Array<Record<string, unknown>>,
+          exportable as unknown as Array<Record<string, unknown>>,
           progressCb
         );
         fileExt = "zip";
       } else {
         result = await dispatchWordExport(
-          invoices as unknown as Array<Record<string, unknown>>,
+          exportable as unknown as Array<Record<string, unknown>>,
           org?.name ?? "Organization",
           includeScreenshots,
           progressCb

@@ -7,13 +7,17 @@ export async function getInvoices(
     tier?: string;
     company?: string;
     reportStatus?: string;
+    scanId?: string;
     dateFrom?: Date;
     dateTo?: Date;
   },
-  take = 200
+  take = 500
 ) {
   const where: any = { organizationId };
 
+  if (filters?.scanId) {
+    where.scanId = filters.scanId;
+  }
   if (filters?.tier) {
     where.classificationTier = filters.tier;
   }
@@ -109,6 +113,22 @@ export async function getCompanyList(organizationId: string) {
     name: c.company!,
     count: c._count,
   }));
+}
+
+/** Lightweight scan list for the Invoices page dropdown */
+export async function getScanListForFilter(organizationId: string) {
+  return db.scan.findMany({
+    where: { organizationId, status: "COMPLETED" },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: {
+      id: true,
+      createdAt: true,
+      totalMessages: true,
+      invoiceCount: true,
+      daysBack: true,
+    },
+  });
 }
 
 export async function bulkCreateInvoices(

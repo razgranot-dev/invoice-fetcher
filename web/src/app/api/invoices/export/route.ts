@@ -38,6 +38,7 @@ export async function GET(req: NextRequest) {
       search: searchParams.get("search") || undefined,
       tier: searchParams.get("tier") || undefined,
       company: searchParams.get("company") || undefined,
+      scanId: searchParams.get("scanId") || undefined,
       reportStatus: searchParams.get("reportStatus") || "INCLUDED",
     },
     10000
