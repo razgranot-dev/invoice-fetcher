@@ -10,14 +10,34 @@ Setup: pip install playwright && python -m playwright install chromium
 
 import logging
 import os
+import re
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from core.invoice_classifier import is_screenshot_worthy
 
 logger = logging.getLogger(__name__)
 
 SCREENSHOT_DIR = os.path.join("output", "screenshots")
+
+# CSS injected into EVERY email HTML BEFORE rendering.
+# Must be the last <style> tag so !important overrides email CSS.
+_OVERRIDE_CSS = """
+html, body {
+    height: auto !important;
+    min-height: unset !important;
+    max-height: none !important;
+    overflow: visible !important;
+    display: block !important;
+    width: 100% !important;
+}
+table { width: 100% !important; }
+img {
+    max-width: 100% !important;
+    height: auto !important;
+    display: block !important;
+}
+"""
 
 
 def _build_email_html(invoice: dict) -> str:
@@ -80,32 +100,30 @@ def _build_email_html(invoice: dict) -> str:
 </html>"""
 
 
-def _wrap_email_html(raw_html: str) -> str:
-    """Wrap raw email HTML in a proper document for rendering.
+def _prepare_email_html(raw_html: str) -> str:
+    """Prepare raw email HTML for screenshot rendering.
 
-    Gmail email bodies are often just HTML fragments without <html>/<head> tags.
-    This wrapper ensures proper charset, a white background, and
-    responsive image sizing so the screenshot shows the full email content.
+    Ensures the HTML has a proper document structure, charset, white background,
+    and — critically — injects override CSS that prevents the email's own styles
+    from clipping or constraining the content.  The override CSS is placed at the
+    END of the document (just before </body>) so it wins over any inline styles.
     """
-    # If it already has a full HTML document structure, use it directly
-    # but inject our rendering CSS
-    lower = raw_html[:500].lower()
-    if "<html" in lower and "<head" in lower:
-        # Inject our CSS into the existing <head>
-        inject_css = (
-            '<style>html, body { background: #fff !important; '
-            'height: auto !important; overflow: visible !important; }'
-            'img { max-width: 100% !important; height: auto !important; }</style>'
-        )
-        # Insert after <head> or <head ...>
-        import re as _re
-        head_end = _re.search(r'<head[^>]*>', raw_html, _re.IGNORECASE)
-        if head_end:
-            pos = head_end.end()
-            return raw_html[:pos] + inject_css + raw_html[pos:]
-        return raw_html
+    override_block = f"<style>{_OVERRIDE_CSS}</style>"
 
-    # Wrap fragment in a full HTML document
+    lower = raw_html[:500].lower()
+
+    # Full HTML document — inject override CSS at end of <body>
+    if "<html" in lower:
+        # Try to inject before </body>
+        body_close = raw_html.rfind("</body")
+        if body_close == -1:
+            body_close = raw_html.rfind("</BODY")
+        if body_close != -1:
+            return raw_html[:body_close] + override_block + raw_html[body_close:]
+        # No </body> — append at end
+        return raw_html + override_block
+
+    # HTML fragment — wrap in a full document with our CSS at the end
     return f"""<!DOCTYPE html>
 <html dir="auto">
 <head>
@@ -116,61 +134,109 @@ def _wrap_email_html(raw_html: str) -> str:
             margin: 0; padding: 16px;
             background: #ffffff; color: #1a1a2e;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            height: auto !important; overflow: visible !important;
         }}
-        img {{ max-width: 100% !important; height: auto !important; }}
-        table {{ max-width: 100% !important; }}
     </style>
 </head>
 <body>
 {raw_html}
+{override_block}
 </body>
 </html>"""
 
 
-_PER_SCREENSHOT_TIMEOUT = 30  # hard cap per screenshot — kill and move on
+_PER_SCREENSHOT_TIMEOUT = 45  # hard cap per screenshot — kill and move on
+_VIEWPORT_WIDTH = 1200
 
 
-async def _render_single(page, html: str, output_path: str) -> tuple[bool, str | None]:
+async def _render_single(
+    page, html: str, output_path: str, invoice_id: str = ""
+) -> tuple[bool, str | None, dict[str, Any]]:
     """Render HTML to PNG using an existing Playwright page.
 
-    Returns (True, None) on success, (False, reason) on failure.
-    Uses 'load' to wait for images, with a short networkidle follow-up.
-    Hard-capped at _PER_SCREENSHOT_TIMEOUT seconds total.
+    Returns (success, error_reason, diagnostics_dict).
     """
     import asyncio
 
+    diag: dict[str, Any] = {"invoice_id": invoice_id}
+
     async def _do_render():
-        # Wait for 'load' event (fires after images/CSS), not just domcontentloaded
+        # 1. Load HTML — wait for 'load' event (fires after images/CSS/iframes)
         await page.set_content(html, wait_until="load", timeout=20000)
-        # Override email CSS that constrains height/clips content
-        await page.add_style_tag(content=(
-            "html, body { height: auto !important; min-height: unset !important; "
-            "max-height: none !important; overflow: visible !important; "
-            "width: 100% !important; }\n"
-            "img { max-width: 100% !important; height: auto !important; }"
-        ))
-        # Brief wait for any remaining network requests (tracking pixels, lazy CSS)
+
+        # 2. Measure page height BEFORE CSS reinforcement
+        height_before = await page.evaluate("() => document.body.scrollHeight")
+        diag["height_before_css"] = height_before
+
+        # 3. Reinforce override CSS via add_style_tag (in case email injects
+        #    dynamic styles after load via JS)
+        await page.add_style_tag(content=_OVERRIDE_CSS)
+
+        # 4. Brief wait for any remaining network requests
         try:
             await page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:
-            pass  # Don't fail if some tracking pixel hangs
-        # Scroll to bottom then back to top to trigger lazy-loaded images
+            pass
+
+        # 5. Measure height AFTER CSS reinforcement
+        height_after = await page.evaluate("() => document.body.scrollHeight")
+        diag["height_after_css"] = height_after
+
+        # 6. Resize viewport to match full content height (prevents clipping)
+        content_height = max(height_after, height_before, 800)
+        await page.set_viewport_size({
+            "width": _VIEWPORT_WIDTH,
+            "height": content_height,
+        })
+        diag["viewport_set_to"] = f"{_VIEWPORT_WIDTH}x{content_height}"
+
+        # 7. Scroll to bottom then back to top to trigger lazy-loaded images
         await page.evaluate("""
             () => new Promise(resolve => {
                 window.scrollTo(0, document.body.scrollHeight);
-                setTimeout(() => { window.scrollTo(0, 0); resolve(); }, 500);
+                setTimeout(() => {
+                    window.scrollTo(0, 0);
+                    setTimeout(resolve, 2000);
+                }, 500);
             })
         """)
+
+        # 8. Final height measurement after scroll (images may have expanded)
+        final_height = await page.evaluate("() => document.body.scrollHeight")
+        diag["final_scroll_height"] = final_height
+
+        # 9. Resize viewport again if content grew after image load
+        if final_height > content_height:
+            await page.set_viewport_size({
+                "width": _VIEWPORT_WIDTH,
+                "height": final_height,
+            })
+            diag["viewport_resized_to"] = f"{_VIEWPORT_WIDTH}x{final_height}"
+
+        # 10. Take full-page screenshot
         await page.screenshot(path=output_path, full_page=True, timeout=15000)
+
+        # 11. Log screenshot file info
+        if os.path.isfile(output_path):
+            file_size = os.path.getsize(output_path)
+            diag["file_size_bytes"] = file_size
+            try:
+                # Read PNG header to get dimensions (bytes 16-24)
+                with open(output_path, "rb") as f:
+                    header = f.read(32)
+                if header[:8] == b'\x89PNG\r\n\x1a\n':
+                    import struct
+                    w, h = struct.unpack('>II', header[16:24])
+                    diag["image_dimensions"] = f"{w}x{h}"
+            except Exception:
+                pass
 
     try:
         await asyncio.wait_for(_do_render(), timeout=_PER_SCREENSHOT_TIMEOUT)
         if os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
-            return True, None
-        return False, "Screenshot file was not created"
+            return True, None, diag
+        return False, "Screenshot file was not created", diag
     except asyncio.TimeoutError:
-        return False, f"Screenshot timed out after {_PER_SCREENSHOT_TIMEOUT}s"
+        return False, f"Screenshot timed out after {_PER_SCREENSHOT_TIMEOUT}s", diag
     except Exception as e:
         reason = str(e) or repr(e)
         if "Executable doesn't exist" in reason or "chromium" in reason.lower():
@@ -181,27 +247,21 @@ async def _render_single(page, html: str, output_path: str) -> tuple[bool, str |
             reason = f"Network error: {reason[:120]}"
         elif "Target closed" in reason or "closed" in reason.lower():
             reason = f"Page crashed: {reason[:120]}"
-        return False, reason
+        return False, reason, diag
 
 
 def _find_chromium_executable():
-    """Locate the Playwright-managed Chromium executable on disk.
-
-    Returns the path string if found, None otherwise.
-    Checks PLAYWRIGHT_BROWSERS_PATH env var first, then standard install locations.
-    """
+    """Locate the Playwright-managed Chromium executable on disk."""
     import platform
     import sys
 
     home = Path.home()
     candidates = []
 
-    # Check PLAYWRIGHT_BROWSERS_PATH env override first
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
     if env_path:
         candidates.append(Path(env_path))
 
-    # Platform-specific default locations
     if platform.system() == "Windows":
         candidates.append(home / "AppData" / "Local" / "ms-playwright")
     else:
@@ -231,7 +291,7 @@ def _find_chromium_executable():
     return None
 
 
-_BROWSER_LAUNCH_TIMEOUT = 30  # seconds — fail fast if Chromium can't start
+_BROWSER_LAUNCH_TIMEOUT = 30
 
 
 async def _get_browser():
@@ -245,14 +305,12 @@ async def _get_browser():
             "playwright package not installed. Run: pip install playwright && python -m playwright install chromium"
         )
 
-    # Pre-check: verify Chromium executable exists
     exe_path = _find_chromium_executable()
     if exe_path:
         logger.info("Found Chromium at: %s", exe_path)
     else:
         logger.warning("Could not locate Chromium executable in standard paths")
 
-    # Chromium sandbox fails in containers (Linux) and worker processes (Windows)
     launch_args = ["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"]
 
     pw = await async_playwright().start()
@@ -271,12 +329,10 @@ async def _get_browser():
         raise RuntimeError(
             f"Screenshot engine failed to start: browser launch timed out after {_BROWSER_LAUNCH_TIMEOUT}s\n"
             f"Executable path: {exe_path or '(not found)'}\n"
-            f"This usually means Chromium is not installed or cannot run in this environment.\n"
             f"Fix: python -m playwright install --with-deps chromium"
         )
     except Exception as e:
         await pw.stop()
-        # Build a detailed error — str(e) is often empty for Playwright errors
         msg = str(e) or ""
         exc_repr = repr(e)
         exc_type = type(e).__name__
@@ -288,7 +344,6 @@ async def _get_browser():
                 f"Original error: {exc_repr}"
             )
 
-        # Construct a useful error from whatever we have
         detail_parts = []
         if msg:
             detail_parts.append(msg)
@@ -308,19 +363,44 @@ async def _get_browser():
         )
 
 
-async def generate_screenshots(invoices: list[dict]) -> list[dict]:
-    """Generate screenshots for a list of invoices. Best-effort.
+async def _new_page(browser):
+    """Create a new page with the standard viewport."""
+    return await browser.new_page(viewport={"width": _VIEWPORT_WIDTH, "height": 800})
 
-    Uses a single browser instance for all screenshots.
-    Adds to each invoice dict:
-      - 'screenshot_path': path to PNG on success
-      - 'screenshot_error': failure reason string on failure
-      - 'screenshot_html_source': 'email' or 'fallback' indicating HTML origin
-    """
+
+def _pick_html(inv: dict, index: int, total: int) -> tuple[str, str]:
+    """Choose and prepare HTML for an invoice. Returns (html, source)."""
+    invoice_id = inv.get("id", f"inv_{index}")
+    body_html = inv.get("body_html")
+    body_html_len = len(body_html) if body_html else 0
+
+    if body_html and body_html_len > 50:
+        html = _prepare_email_html(body_html)
+        source = "email"
+        logger.info(
+            "Screenshot %d/%d [%s] source=email, body_html=%d chars",
+            index + 1, total, invoice_id, body_html_len,
+        )
+    else:
+        html = _build_email_html(inv)
+        source = "fallback"
+        logger.warning(
+            "Screenshot %d/%d [%s] source=FALLBACK — body_html %s "
+            "(sender=%s, subject=%.60s)",
+            index + 1, total, invoice_id,
+            "is empty/null" if not body_html else f"only {body_html_len} chars",
+            inv.get("sender", "?"),
+            inv.get("subject", "?"),
+        )
+
+    return html, source
+
+
+async def generate_screenshots(invoices: list[dict]) -> list[dict]:
+    """Generate screenshots for a list of invoices. Best-effort."""
     abs_dir = os.path.abspath(SCREENSHOT_DIR)
     Path(abs_dir).mkdir(parents=True, exist_ok=True)
 
-    # Try to launch browser once
     try:
         pw, browser = await _get_browser()
     except Exception as e:
@@ -333,58 +413,57 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
 
     success_count = 0
     fail_count = 0
+    total = len(invoices)
 
     try:
-        page = await browser.new_page(viewport={"width": 1200, "height": 800})
+        page = await _new_page(browser)
 
         for i, inv in enumerate(invoices):
             invoice_id = inv.get("id", f"inv_{i}")
             output_path = os.path.join(abs_dir, f"{invoice_id}.png")
 
-            # Quality gate — skip weak/non-invoice emails
             worthy, skip_reason = is_screenshot_worthy(inv)
             if not worthy:
                 inv["screenshot_error"] = skip_reason
                 inv["screenshot_html_source"] = "skipped"
                 fail_count += 1
                 logger.info(
-                    "Screenshot %d/%d skipped for %s (%s): %s",
-                    i + 1, len(invoices), invoice_id,
-                    inv.get("sender", "?"), skip_reason,
+                    "Screenshot %d/%d [%s] SKIPPED: %s (tier=%s)",
+                    i + 1, total, invoice_id, skip_reason,
+                    inv.get("classification_tier", "?"),
                 )
                 continue
 
-            body_html = inv.get("body_html")
-            if body_html and len(body_html.strip()) > 50:
-                html = _wrap_email_html(body_html)
-                inv["screenshot_html_source"] = "email"
-            else:
-                html = _build_email_html(inv)
-                inv["screenshot_html_source"] = "fallback"
-                logger.info(
-                    "Screenshot %d/%d using fallback for %s — body_html %s",
-                    i + 1, len(invoices), invoice_id,
-                    "empty" if not body_html else f"{len(body_html)} chars",
-                )
+            html, source = _pick_html(inv, i, total)
+            inv["screenshot_html_source"] = source
 
-            ok, reason = await _render_single(page, html, output_path)
+            ok, reason, diag = await _render_single(page, html, output_path, invoice_id)
             if ok:
                 inv["screenshot_path"] = output_path
                 success_count += 1
+                logger.info(
+                    "Screenshot %d/%d [%s] OK — source=%s, dims=%s, "
+                    "heights: before=%s after=%s final=%s, size=%s bytes",
+                    i + 1, total, invoice_id, source,
+                    diag.get("image_dimensions", "?"),
+                    diag.get("height_before_css", "?"),
+                    diag.get("height_after_css", "?"),
+                    diag.get("final_scroll_height", "?"),
+                    diag.get("file_size_bytes", "?"),
+                )
             else:
                 inv["screenshot_error"] = reason or "Unknown render failure"
                 fail_count += 1
-                logger.info(
-                    "Screenshot %d/%d failed for %s (%s): %s",
-                    i + 1, len(invoices), invoice_id,
-                    inv.get("sender", "?"), reason,
+                logger.warning(
+                    "Screenshot %d/%d [%s] FAILED: %s (diag: %s)",
+                    i + 1, total, invoice_id, reason, diag,
                 )
                 if reason and ("crashed" in reason.lower() or "closed" in reason.lower() or "timed out" in reason.lower()):
                     try:
                         await page.close()
                     except Exception:
                         pass
-                    page = await browser.new_page(viewport={"width": 1200, "height": 800})
+                    page = await _new_page(browser)
 
         await page.close()
     finally:
@@ -392,8 +471,8 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
         await pw.stop()
 
     logger.info(
-        "Screenshots: %d succeeded, %d failed out of %d total",
-        success_count, fail_count, len(invoices),
+        "Screenshots complete: %d succeeded, %d failed out of %d total",
+        success_count, fail_count, total,
     )
     return invoices
 
@@ -401,20 +480,10 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
 async def generate_screenshots_with_progress(
     invoices: list[dict],
 ) -> AsyncIterator[list[dict]]:
-    """Generate screenshots one by one, yielding the full list after each.
-
-    Uses a single browser instance for all screenshots.
-    Yields the invoice list after each screenshot attempt.
-
-    Each invoice gets:
-      - 'screenshot_path': on success
-      - 'screenshot_error': reason string on failure
-      - 'screenshot_html_source': 'email' or 'fallback'
-    """
+    """Generate screenshots one by one, yielding the full list after each."""
     abs_dir = os.path.abspath(SCREENSHOT_DIR)
     Path(abs_dir).mkdir(parents=True, exist_ok=True)
 
-    # Try to launch browser once
     try:
         pw, browser = await _get_browser()
     except Exception as e:
@@ -426,56 +495,55 @@ async def generate_screenshots_with_progress(
             yield invoices
         return
 
+    total = len(invoices)
+
     try:
-        page = await browser.new_page(viewport={"width": 1200, "height": 800})
+        page = await _new_page(browser)
 
         for i, inv in enumerate(invoices):
             invoice_id = inv.get("id", f"inv_{i}")
             output_path = os.path.join(abs_dir, f"{invoice_id}.png")
 
-            # Quality gate — skip weak/non-invoice emails
             worthy, skip_reason = is_screenshot_worthy(inv)
             if not worthy:
                 inv["screenshot_error"] = skip_reason
                 inv["screenshot_html_source"] = "skipped"
                 logger.info(
-                    "Screenshot %d/%d skipped for %s (%s): %s",
-                    i + 1, len(invoices), invoice_id,
-                    inv.get("sender", "?"), skip_reason,
+                    "Screenshot %d/%d [%s] SKIPPED: %s (tier=%s)",
+                    i + 1, total, invoice_id, skip_reason,
+                    inv.get("classification_tier", "?"),
                 )
                 yield invoices
                 continue
 
-            body_html = inv.get("body_html")
-            if body_html and len(body_html.strip()) > 50:
-                html = _wrap_email_html(body_html)
-                inv["screenshot_html_source"] = "email"
-            else:
-                html = _build_email_html(inv)
-                inv["screenshot_html_source"] = "fallback"
-                logger.info(
-                    "Screenshot %d/%d using fallback for %s — body_html %s",
-                    i + 1, len(invoices), invoice_id,
-                    "empty" if not body_html else f"{len(body_html)} chars",
-                )
+            html, source = _pick_html(inv, i, total)
+            inv["screenshot_html_source"] = source
 
-            ok, reason = await _render_single(page, html, output_path)
+            ok, reason, diag = await _render_single(page, html, output_path, invoice_id)
             if ok:
                 inv["screenshot_path"] = output_path
+                logger.info(
+                    "Screenshot %d/%d [%s] OK — source=%s, dims=%s, "
+                    "heights: before=%s after=%s final=%s, size=%s bytes",
+                    i + 1, total, invoice_id, source,
+                    diag.get("image_dimensions", "?"),
+                    diag.get("height_before_css", "?"),
+                    diag.get("height_after_css", "?"),
+                    diag.get("final_scroll_height", "?"),
+                    diag.get("file_size_bytes", "?"),
+                )
             else:
                 inv["screenshot_error"] = reason or "Unknown render failure"
-                logger.info(
-                    "Screenshot %d/%d failed for %s (%s): %s",
-                    i + 1, len(invoices), invoice_id,
-                    inv.get("sender", "?"), reason,
+                logger.warning(
+                    "Screenshot %d/%d [%s] FAILED: %s (diag: %s)",
+                    i + 1, total, invoice_id, reason, diag,
                 )
-                # If the page crashed, create a fresh one for remaining screenshots
                 if reason and ("crashed" in reason.lower() or "closed" in reason.lower() or "timed out" in reason.lower()):
                     try:
                         await page.close()
                     except Exception:
                         pass
-                    page = await browser.new_page(viewport={"width": 1200, "height": 800})
+                    page = await _new_page(browser)
 
             yield invoices
 
