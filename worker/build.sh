@@ -4,5 +4,5 @@ set -e
 
 pip install -r requirements.txt
 
-# Install Playwright's bundled Chromium + its OS-level dependencies
-python -m playwright install --with-deps chromium
+# Download Playwright's bundled Chromium (Render already has OS-level deps)
+python -m playwright install chromium
