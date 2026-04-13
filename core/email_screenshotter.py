@@ -80,6 +80,54 @@ def _build_email_html(invoice: dict) -> str:
 </html>"""
 
 
+def _wrap_email_html(raw_html: str) -> str:
+    """Wrap raw email HTML in a proper document for rendering.
+
+    Gmail email bodies are often just HTML fragments without <html>/<head> tags.
+    This wrapper ensures proper charset, a white background, and
+    responsive image sizing so the screenshot shows the full email content.
+    """
+    # If it already has a full HTML document structure, use it directly
+    # but inject our rendering CSS
+    lower = raw_html[:500].lower()
+    if "<html" in lower and "<head" in lower:
+        # Inject our CSS into the existing <head>
+        inject_css = (
+            '<style>html, body { background: #fff !important; '
+            'height: auto !important; overflow: visible !important; }'
+            'img { max-width: 100% !important; height: auto !important; }</style>'
+        )
+        # Insert after <head> or <head ...>
+        import re as _re
+        head_end = _re.search(r'<head[^>]*>', raw_html, _re.IGNORECASE)
+        if head_end:
+            pos = head_end.end()
+            return raw_html[:pos] + inject_css + raw_html[pos:]
+        return raw_html
+
+    # Wrap fragment in a full HTML document
+    return f"""<!DOCTYPE html>
+<html dir="auto">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=1200">
+    <style>
+        html, body {{
+            margin: 0; padding: 16px;
+            background: #ffffff; color: #1a1a2e;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            height: auto !important; overflow: visible !important;
+        }}
+        img {{ max-width: 100% !important; height: auto !important; }}
+        table {{ max-width: 100% !important; }}
+    </style>
+</head>
+<body>
+{raw_html}
+</body>
+</html>"""
+
+
 _PER_SCREENSHOT_TIMEOUT = 30  # hard cap per screenshot — kill and move on
 
 
@@ -87,18 +135,26 @@ async def _render_single(page, html: str, output_path: str) -> tuple[bool, str |
     """Render HTML to PNG using an existing Playwright page.
 
     Returns (True, None) on success, (False, reason) on failure.
-    Uses domcontentloaded (not networkidle) so external images/pixels don't block.
+    Uses 'load' to wait for images, with a short networkidle follow-up.
     Hard-capped at _PER_SCREENSHOT_TIMEOUT seconds total.
     """
     import asyncio
 
     async def _do_render():
-        await page.set_content(html, wait_until="domcontentloaded", timeout=15000)
+        # Wait for 'load' event (fires after images/CSS), not just domcontentloaded
+        await page.set_content(html, wait_until="load", timeout=20000)
         # Override email CSS that constrains height/clips content
         await page.add_style_tag(content=(
             "html, body { height: auto !important; min-height: unset !important; "
-            "max-height: none !important; overflow: visible !important; }"
+            "max-height: none !important; overflow: visible !important; "
+            "width: 100% !important; }\n"
+            "img { max-width: 100% !important; height: auto !important; }"
         ))
+        # Brief wait for any remaining network requests (tracking pixels, lazy CSS)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass  # Don't fail if some tracking pixel hangs
         # Scroll to bottom then back to top to trigger lazy-loaded images
         await page.evaluate("""
             () => new Promise(resolve => {
@@ -279,7 +335,7 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
     fail_count = 0
 
     try:
-        page = await browser.new_page(viewport={"width": 800, "height": 600})
+        page = await browser.new_page(viewport={"width": 1200, "height": 800})
 
         for i, inv in enumerate(invoices):
             invoice_id = inv.get("id", f"inv_{i}")
@@ -299,12 +355,17 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
                 continue
 
             body_html = inv.get("body_html")
-            if body_html:
-                html = body_html
+            if body_html and len(body_html.strip()) > 50:
+                html = _wrap_email_html(body_html)
                 inv["screenshot_html_source"] = "email"
             else:
                 html = _build_email_html(inv)
                 inv["screenshot_html_source"] = "fallback"
+                logger.info(
+                    "Screenshot %d/%d using fallback for %s — body_html %s",
+                    i + 1, len(invoices), invoice_id,
+                    "empty" if not body_html else f"{len(body_html)} chars",
+                )
 
             ok, reason = await _render_single(page, html, output_path)
             if ok:
@@ -323,7 +384,7 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
                         await page.close()
                     except Exception:
                         pass
-                    page = await browser.new_page(viewport={"width": 800, "height": 600})
+                    page = await browser.new_page(viewport={"width": 1200, "height": 800})
 
         await page.close()
     finally:
@@ -366,7 +427,7 @@ async def generate_screenshots_with_progress(
         return
 
     try:
-        page = await browser.new_page(viewport={"width": 800, "height": 600})
+        page = await browser.new_page(viewport={"width": 1200, "height": 800})
 
         for i, inv in enumerate(invoices):
             invoice_id = inv.get("id", f"inv_{i}")
@@ -386,12 +447,17 @@ async def generate_screenshots_with_progress(
                 continue
 
             body_html = inv.get("body_html")
-            if body_html:
-                html = body_html
+            if body_html and len(body_html.strip()) > 50:
+                html = _wrap_email_html(body_html)
                 inv["screenshot_html_source"] = "email"
             else:
                 html = _build_email_html(inv)
                 inv["screenshot_html_source"] = "fallback"
+                logger.info(
+                    "Screenshot %d/%d using fallback for %s — body_html %s",
+                    i + 1, len(invoices), invoice_id,
+                    "empty" if not body_html else f"{len(body_html)} chars",
+                )
 
             ok, reason = await _render_single(page, html, output_path)
             if ok:
@@ -409,7 +475,7 @@ async def generate_screenshots_with_progress(
                         await page.close()
                     except Exception:
                         pass
-                    page = await browser.new_page(viewport={"width": 800, "height": 600})
+                    page = await browser.new_page(viewport={"width": 1200, "height": 800})
 
             yield invoices
 
