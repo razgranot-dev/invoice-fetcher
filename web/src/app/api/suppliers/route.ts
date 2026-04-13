@@ -56,6 +56,21 @@ export async function PATCH(req: NextRequest) {
     invoicesUpdated = result.count;
   }
 
+  // 4. Also cascade to invoices matched by company name (for vendors
+  //    without a matching senderDomain, e.g. "FLYSTORE", "Gett")
+  const companyResult = await db.invoice.updateMany({
+    where: {
+      organizationId: orgId,
+      company: { equals: name, mode: "insensitive" },
+      // Don't re-update invoices already covered by domain match
+      ...(matchingDomains.length > 0
+        ? { senderDomain: { notIn: matchingDomains } }
+        : {}),
+    },
+    data: { reportStatus: isRelevant ? "INCLUDED" : "EXCLUDED" },
+  });
+  invoicesUpdated += companyResult.count;
+
   // Invalidate the cached /invoices page so navigation back shows fresh data
   revalidatePath("/invoices");
 

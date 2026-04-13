@@ -43,14 +43,11 @@ export async function getInvoices(
     ];
   }
 
-  console.log("[getInvoices] where:", JSON.stringify(where));
-  const results = await db.invoice.findMany({
+  return db.invoice.findMany({
     where,
     orderBy: { date: "desc" },
     take,
   });
-  console.log("[getInvoices] returned:", results.length, "invoices");
-  return results;
 }
 
 export async function updateReportStatus(

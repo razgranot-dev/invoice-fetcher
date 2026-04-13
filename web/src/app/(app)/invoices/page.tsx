@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { requireOrganization } from "@/lib/session";
 import { getInvoices, getCompanyList, getScanListForFilter } from "@/lib/data/invoices";
 import { getSuppliers } from "@/lib/data/suppliers";
+import { normalizeDomain } from "@/lib/utils";
 import { InvoiceFilters } from "./filters";
 import { SupplierPanel } from "./supplier-panel";
 import { InvoiceList } from "./invoice-list";
@@ -24,7 +25,6 @@ export default async function InvoicesPage({
   const { organizationId } = await requireOrganization();
   const params = await searchParams;
 
-  // Debug: log the exact filter values being passed to the query
   const filters = {
     search: params.search,
     tier: params.tier,
@@ -32,15 +32,72 @@ export default async function InvoicesPage({
     reportStatus: params.report,
     scanId: params.scan || undefined,
   };
-  console.log("[InvoicesPage] filters:", JSON.stringify(filters));
 
-  const [invoices, companies, suppliers, scanList] = await Promise.all([
+  const [allInvoices, companies, dbSuppliers, scanList] = await Promise.all([
     getInvoices(organizationId, filters),
     getCompanyList(organizationId),
     getSuppliers(organizationId),
     getScanListForFilter(organizationId),
   ]);
-  console.log("[InvoicesPage] results:", invoices.length, "invoices for scanId:", filters.scanId ?? "all");
+
+  // ── Bug 1 fix: derive suppliers from actual invoice data ──────────
+  // Ensure every vendor in the current view has a supplier panel entry.
+  const dbSupplierNames = new Set(dbSuppliers.map((s) => s.name.toLowerCase()));
+  const extraSuppliers: typeof dbSuppliers = [];
+
+  const invoiceBrandCounts = new Map<string, { displayName: string; count: number }>();
+  for (const inv of allInvoices) {
+    const brand = inv.senderDomain
+      ? normalizeDomain(inv.senderDomain)
+      : inv.company?.trim().toLowerCase();
+    if (!brand) continue;
+    const entry = invoiceBrandCounts.get(brand);
+    if (entry) {
+      entry.count++;
+    } else {
+      // Pick best display name: company field or capitalized brand
+      const display = inv.company?.trim() || brand;
+      invoiceBrandCounts.set(brand, { displayName: display, count: 1 });
+    }
+  }
+
+  for (const [brand, { displayName, count }] of invoiceBrandCounts) {
+    if (!dbSupplierNames.has(brand)) {
+      extraSuppliers.push({
+        id: `derived-${brand}`,
+        name: brand,
+        isRelevant: true,
+        invoiceCount: count,
+        organizationId,
+        createdAt: new Date(),
+      } as any);
+      dbSupplierNames.add(brand);
+    }
+  }
+
+  const allSuppliers = [...dbSuppliers, ...extraSuppliers];
+
+  // ── Bug 2 fix: filter invoices by supplier relevance ──────────────
+  // Build set of excluded brand names from supplier panel state
+  const excludedBrands = new Set(
+    allSuppliers
+      .filter((s) => !s.isRelevant)
+      .map((s) => s.name.toLowerCase())
+  );
+
+  const visibleInvoices =
+    excludedBrands.size > 0
+      ? allInvoices.filter((inv) => {
+          const brand = inv.senderDomain
+            ? normalizeDomain(inv.senderDomain)
+            : null;
+          const companyLower = inv.company?.trim().toLowerCase();
+          if (brand && excludedBrands.has(brand)) return false;
+          if (!brand && companyLower && excludedBrands.has(companyLower))
+            return false;
+          return true;
+        })
+      : allInvoices;
 
   // Exports always use INCLUDED only
   const exportQuery = new URLSearchParams();
@@ -52,7 +109,7 @@ export default async function InvoicesPage({
   const exportUrl = `/api/invoices/export?${exportQuery.toString()}`;
 
   // Serialize dates for client component
-  const serialized = invoices.map((inv) => ({
+  const serialized = visibleInvoices.map((inv) => ({
     id: inv.id,
     company: inv.company,
     subject: inv.subject,
@@ -66,10 +123,11 @@ export default async function InvoicesPage({
     reportStatus: inv.reportStatus,
   }));
 
-  const includedCount = invoices.filter(
+  // ── Bug 3 fix: count from visible invoices only ───────────────────
+  const includedCount = visibleInvoices.filter(
     (inv) => inv.reportStatus === "INCLUDED"
   ).length;
-  const reviewCount = invoices.filter(
+  const reviewCount = visibleInvoices.filter(
     (inv) => inv.reportStatus === "EXCLUDED"
   ).length;
 
@@ -77,7 +135,7 @@ export default async function InvoicesPage({
     <div className="space-y-6">
       <PageHeader
         title="Invoices"
-        description={`${invoices.length} results \u00b7 ${includedCount} included${reviewCount > 0 ? ` \u00b7 ${reviewCount} for review` : ""}`}
+        description={`${visibleInvoices.length} results \u00b7 ${includedCount} included${reviewCount > 0 ? ` \u00b7 ${reviewCount} for review` : ""}`}
       >
         <div className="flex gap-2">
           {includedCount > 0 ? (
@@ -113,9 +171,9 @@ export default async function InvoicesPage({
           createdAt: s.createdAt.toISOString(),
         }))}
       />
-      <SupplierPanel suppliers={suppliers} />
+      <SupplierPanel suppliers={allSuppliers} />
 
-      {invoices.length > 0 ? (
+      {visibleInvoices.length > 0 ? (
         <InvoiceList invoices={serialized} />
       ) : (
         <EmptyState
