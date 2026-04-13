@@ -87,12 +87,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ scan: { ...scan, status: "FAILED", errorMessage: result.error } });
     }
 
-    // Store invoices in DB
-    if (result.invoices.length > 0) {
+    // ── Scan-time quality filter ──────────────────────────────────────
+    // Drop clear non-invoices before DB persistence.
+    // Borderline emails are saved as EXCLUDED (user can override).
+    const PERSIST_TIERS = new Set([
+      "confirmed_invoice",
+      "likely_invoice",
+      "possible_financial_email",
+    ]);
+    const INCLUDED_TIERS = new Set([
+      "confirmed_invoice",
+      "likely_invoice",
+    ]);
+
+    const persistable = result.invoices.filter(
+      (inv) => PERSIST_TIERS.has(inv.classification_tier ?? "")
+    );
+    const droppedCount = result.invoices.length - persistable.length;
+
+    if (persistable.length > 0) {
       await bulkCreateInvoices(
         orgId,
         scan.id,
-        result.invoices.map((inv) => ({
+        persistable.map((inv) => ({
           gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
           subject: inv.subject ?? "(no subject)",
           sender: inv.sender ?? "",
@@ -108,6 +125,9 @@ export async function POST(req: NextRequest) {
           hasAttachment: (inv.attachments?.length ?? 0) > 0,
           attachmentPath: inv.saved_path || undefined,
           notes: inv.notes || undefined,
+          reportStatus: INCLUDED_TIERS.has(inv.classification_tier ?? "")
+            ? ("INCLUDED" as const)
+            : ("EXCLUDED" as const),
         }))
       );
     }
@@ -116,7 +136,7 @@ export async function POST(req: NextRequest) {
       status: "COMPLETED",
       totalMessages: result.total_messages,
       processedCount: result.total_messages,
-      invoiceCount: result.invoices.length,
+      invoiceCount: persistable.length,
       completedAt: new Date(),
     });
 
@@ -126,7 +146,8 @@ export async function POST(req: NextRequest) {
           ...scan,
           status: "COMPLETED",
           totalMessages: result.total_messages,
-          invoiceCount: result.invoices.length,
+          invoiceCount: persistable.length,
+          filteredOut: droppedCount,
         },
       },
       { status: 201 }

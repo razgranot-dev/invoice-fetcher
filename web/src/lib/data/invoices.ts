@@ -131,6 +131,7 @@ export async function bulkCreateInvoices(
     hasAttachment: boolean;
     attachmentPath?: string;
     notes?: string;
+    reportStatus?: "INCLUDED" | "EXCLUDED";
   }>
 ) {
   return db.invoice.createMany({
