@@ -146,7 +146,7 @@ async def run_scan(req: ScanRequest):
                     parsed.get("body_text", ""), parsed.get("body_html", "")
                 )
                 parsed["notes"] = (
-                    "Invoice content found in body"
+                    "\u05ea\u05d5\u05db\u05df \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05e0\u05de\u05e6\u05d0 \u05d1\u05d2\u05d5\u05e3 \u05d4\u05d4\u05d5\u05d3\u05e2\u05d4"  # תוכן חשבונית נמצא בגוף ההודעה
                     if body_parser.looks_like_invoice(text)
                     else ""
                 )
