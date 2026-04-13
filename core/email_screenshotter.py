@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import AsyncIterator
 
+from core.invoice_classifier import is_screenshot_worthy
+
 logger = logging.getLogger(__name__)
 
 SCREENSHOT_DIR = os.path.join("output", "screenshots")
@@ -92,6 +94,11 @@ async def _render_single(page, html: str, output_path: str) -> tuple[bool, str |
 
     async def _do_render():
         await page.set_content(html, wait_until="domcontentloaded", timeout=10000)
+        # Override email CSS that constrains height/clips content
+        await page.add_style_tag(content=(
+            "html, body { height: auto !important; min-height: auto !important; "
+            "max-height: none !important; overflow: visible !important; }"
+        ))
         await page.screenshot(path=output_path, full_page=True, timeout=10000)
 
     try:
@@ -271,6 +278,19 @@ async def generate_screenshots(invoices: list[dict]) -> list[dict]:
             invoice_id = inv.get("id", f"inv_{i}")
             output_path = os.path.join(abs_dir, f"{invoice_id}.png")
 
+            # Quality gate — skip weak/non-invoice emails
+            worthy, skip_reason = is_screenshot_worthy(inv)
+            if not worthy:
+                inv["screenshot_error"] = skip_reason
+                inv["screenshot_html_source"] = "skipped"
+                fail_count += 1
+                logger.info(
+                    "Screenshot %d/%d skipped for %s (%s): %s",
+                    i + 1, len(invoices), invoice_id,
+                    inv.get("sender", "?"), skip_reason,
+                )
+                continue
+
             body_html = inv.get("body_html")
             if body_html:
                 html = body_html
@@ -344,6 +364,19 @@ async def generate_screenshots_with_progress(
         for i, inv in enumerate(invoices):
             invoice_id = inv.get("id", f"inv_{i}")
             output_path = os.path.join(abs_dir, f"{invoice_id}.png")
+
+            # Quality gate — skip weak/non-invoice emails
+            worthy, skip_reason = is_screenshot_worthy(inv)
+            if not worthy:
+                inv["screenshot_error"] = skip_reason
+                inv["screenshot_html_source"] = "skipped"
+                logger.info(
+                    "Screenshot %d/%d skipped for %s (%s): %s",
+                    i + 1, len(invoices), invoice_id,
+                    inv.get("sender", "?"), skip_reason,
+                )
+                yield invoices
+                continue
 
             body_html = inv.get("body_html")
             if body_html:

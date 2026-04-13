@@ -224,12 +224,48 @@ _NEGATIVE_SUBJECT: list[tuple[str, int]] = [
     ("invited you", -35),
     ("new follower", -50),
     ("liked your", -50),
+    # Service / status emails (not invoices)
+    ("service notification", -25),
+    ("system maintenance", -35),
+    ("scheduled maintenance", -35),
+    ("status update", -25),
+    ("incident report", -30),
+    ("outage", -30),
+    # Review / feedback requests
+    ("rate your", -30),
+    ("review your experience", -30),
+    ("how was your", -30),
+    ("feedback request", -30),
+    ("take our survey", -30),
+    ("tell us what you think", -25),
+    # Shipping (not invoices — separate from billing)
+    ("has been shipped", -15),
+    ("out for delivery", -20),
+    ("delivery update", -15),
+    ("track your package", -20),
+    ("tracking number", -10),
+    # Account lifecycle (not billing)
+    ("your account has been", -20),
+    ("account created", -25),
+    ("welcome aboard", -30),
+    ("onboarding", -30),
+    ("setup your", -25),
+    ("your free", -25),
+    # Generic alerts
+    ("alert:", -20),
+    ("action required", -15),
+    ("action needed", -15),
+    ("important update", -15),
     # Hebrew negative
     ("איפוס סיסמה", -50),
     ("אימות חשבון", -40),
     ("התראת אבטחה", -40),
     ("עדכון מוצר", -35),
     ("ניוזלטר", -40),
+    ("עדכון שירות", -25),
+    ("תחזוקה מתוכננת", -35),
+    ("דרגו את", -30),
+    ("משלוח", -15),
 ]
 
 # Sender domains/patterns that rarely send invoices
@@ -275,6 +311,50 @@ _NEGATIVE_BODY: list[tuple[str, int]] = [
 
 
 # ── Core classifier ──────────────────────────────────────────────────────────
+
+def is_screenshot_worthy(invoice: dict[str, Any]) -> tuple[bool, str]:
+    """Determine if an invoice merits a screenshot for export.
+
+    Returns (True, "") if worthy, (False, reason) if not.
+    Skips weak/non-invoice emails to keep exports professional.
+    """
+    tier = invoice.get("classification_tier", "")
+
+    # No classification data — assume worthy (backward compat)
+    if not tier:
+        return True, ""
+
+    if tier == TIER_NOT:
+        return False, "skipped: not an invoice"
+
+    if tier == TIER_POSSIBLE:
+        return False, "skipped: insufficient invoice content"
+
+    # likely_invoice without amount AND without attachment = borderline
+    if tier == TIER_LIKELY:
+        has_amount = invoice.get("amount") is not None
+        has_attachment = bool(
+            invoice.get("has_attachment")
+            or invoice.get("saved_path")
+            or any(
+                a.get("filename", "").lower().endswith(".pdf")
+                for a in (invoice.get("attachments") or [])
+            )
+        )
+        if not has_amount and not has_attachment:
+            return False, "skipped: no billing details found"
+
+    # Body too short to be a real invoice/receipt
+    body_html = invoice.get("body_html") or ""
+    body_text = invoice.get("body_text") or ""
+    if body_html or body_text:
+        content = body_text or re.sub(r"<[^>]+>", " ", body_html)
+        content_stripped = re.sub(r"\s+", " ", content).strip()
+        if len(content_stripped) < 50:
+            return False, "skipped: empty email body"
+
+    return True, ""
+
 
 def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
     """Classify a single email and return enriched data with classification.

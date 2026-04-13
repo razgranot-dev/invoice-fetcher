@@ -216,11 +216,14 @@ async def export_word(req: ExportRequest):
                     inv = invoices[i]
                     pct = int((i + 1) / total * 70)
                     sender = inv.get("sender") or "unknown"
-                    if inv.get("screenshot_error"):
+                    error = inv.get("screenshot_error") or ""
+                    if error.startswith("skipped:"):
+                        msg = f"Screenshot {i + 1}/{total} {error} — {sender}"
+                    elif error:
                         screenshot_failures.append({
                             "supplier": inv.get("company") or inv.get("sender") or "Unknown",
                             "date": str(inv.get("date") or "")[:10],
-                            "reason": inv["screenshot_error"],
+                            "reason": error,
                         })
                         msg = f"Screenshot {i + 1}/{total} failed — {sender}"
                     else:
@@ -310,7 +313,10 @@ async def export_screenshots_zip(req: ExportRequest):
                 inv = invoices[i]
                 pct = int((i + 1) / total * 80)
                 sender = inv.get("sender") or "unknown"
-                if inv.get("screenshot_error"):
+                error = inv.get("screenshot_error") or ""
+                if error.startswith("skipped:"):
+                    msg = f"Screenshot {i + 1}/{total} {error} — {sender}"
+                elif error:
                     msg = f"Screenshot {i + 1}/{total} failed — {sender}"
                 else:
                     msg = f"Screenshot {i + 1}/{total} — {sender}"
