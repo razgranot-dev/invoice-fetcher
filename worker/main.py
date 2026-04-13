@@ -215,13 +215,17 @@ async def export_word(req: ExportRequest):
                     invoices = inv_list
                     inv = invoices[i]
                     pct = int((i + 1) / total * 70)
+                    sender = inv.get("sender") or "unknown"
                     if inv.get("screenshot_error"):
                         screenshot_failures.append({
                             "supplier": inv.get("company") or inv.get("sender") or "Unknown",
                             "date": str(inv.get("date") or "")[:10],
                             "reason": inv["screenshot_error"],
                         })
-                    yield _json.dumps({"progress": pct, "message": f"Screenshot {i + 1}/{total}"}) + "\n"
+                        msg = f"Screenshot {i + 1}/{total} failed — {sender}"
+                    else:
+                        msg = f"Screenshot {i + 1}/{total} — {sender}"
+                    yield _json.dumps({"progress": pct, "message": msg}) + "\n"
                     i += 1
             except ImportError:
                 try:
@@ -303,8 +307,14 @@ async def export_screenshots_zip(req: ExportRequest):
             i = 0
             async for inv_list in generate_screenshots_with_progress(invoices):
                 invoices = inv_list
+                inv = invoices[i]
                 pct = int((i + 1) / total * 80)
-                yield _json.dumps({"progress": pct, "message": f"Screenshot {i + 1}/{total}"}) + "\n"
+                sender = inv.get("sender") or "unknown"
+                if inv.get("screenshot_error"):
+                    msg = f"Screenshot {i + 1}/{total} failed — {sender}"
+                else:
+                    msg = f"Screenshot {i + 1}/{total} — {sender}"
+                yield _json.dumps({"progress": pct, "message": msg}) + "\n"
                 i += 1
         except Exception as e:
             error_str = str(e) or repr(e)
