@@ -71,7 +71,7 @@ export default async function ScanDetailPage({
       {/* Scan metadata */}
       <div className="rounded-xl border border-border bg-card p-5">
         {(() => {
-          const includedCount = scan.invoices.filter((i) => i.reportStatus !== "EXCLUDED").length;
+          const includedCount = scan.invoices.filter((i) => i.reportStatus === "INCLUDED").length;
           const reviewCount = scan.invoices.filter((i) => i.reportStatus === "EXCLUDED").length;
           const filteredOut = (scan.processedCount ?? 0) - scan.invoices.length;
           return (
@@ -125,7 +125,7 @@ export default async function ScanDetailPage({
             <h2 className="text-sm font-semibold">
               {scan.invoices.length} Result{scan.invoices.length !== 1 ? "s" : ""} Saved
               {(() => {
-                const inc = scan.invoices.filter((i) => i.reportStatus !== "EXCLUDED").length;
+                const inc = scan.invoices.filter((i) => i.reportStatus === "INCLUDED").length;
                 const exc = scan.invoices.filter((i) => i.reportStatus === "EXCLUDED").length;
                 const parts: string[] = [];
                 if (inc > 0) parts.push(`${inc} included`);

@@ -25,15 +25,9 @@ export async function getInvoices(
     where.company = filters.company;
   }
 
-  // Report inclusion filter — treat null as INCLUDED (backwards compat
-  // for invoices created before reportStatus was set at scan time)
-  if (filters?.reportStatus === "INCLUDED") {
-    if (!where.AND) where.AND = [];
-    where.AND.push({
-      OR: [{ reportStatus: "INCLUDED" }, { reportStatus: null }],
-    });
-  } else if (filters?.reportStatus === "EXCLUDED") {
-    where.reportStatus = "EXCLUDED";
+  // Report inclusion filter
+  if (filters?.reportStatus === "INCLUDED" || filters?.reportStatus === "EXCLUDED") {
+    where.reportStatus = filters.reportStatus;
   }
 
   if (filters?.dateFrom || filters?.dateTo) {
