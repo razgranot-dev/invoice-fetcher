@@ -171,22 +171,25 @@ export async function POST(req: NextRequest) {
         const createResult = await bulkCreateInvoices(orgId, scan.id, invoiceRows);
         console.log(`[Scan ${scan.id}] bulkCreate: ${createResult.count} new, ${invoiceRows.length} total`);
 
-        // Re-associate existing duplicates with this scan so the scan
-        // filter works correctly — the latest scan always owns its invoices
+        // ALWAYS re-associate ALL matching invoices to this scan.
+        // createMany with skipDuplicates does NOT update existing rows,
+        // so we must explicitly set scanId on duplicates.
         const messageIds = invoiceRows
           .map((r) => r.gmailMessageId)
           .filter((id) => !id.startsWith("unknown-"));
-        console.log(`[Scan ${scan.id}] messageIds for re-association: ${messageIds.length} (${invoiceRows.length - messageIds.length} unknown)`);
         if (messageIds.length > 0) {
-          const reassocResult = await db.invoice.updateMany({
-            where: {
-              organizationId: orgId,
-              gmailMessageId: { in: messageIds },
-              scanId: { not: scan.id },
-            },
-            data: { scanId: scan.id },
-          });
-          console.log(`[Scan ${scan.id}] re-associated ${reassocResult.count} existing invoices`);
+          // Batch in chunks of 500 to avoid oversized IN clauses
+          for (let i = 0; i < messageIds.length; i += 500) {
+            const chunk = messageIds.slice(i, i + 500);
+            const reassocResult = await db.invoice.updateMany({
+              where: {
+                organizationId: orgId,
+                gmailMessageId: { in: chunk },
+              },
+              data: { scanId: scan.id },
+            });
+            console.log(`[Scan ${scan.id}] re-associated chunk ${i}-${i + chunk.length}: ${reassocResult.count} rows`);
+          }
         }
       }
 
