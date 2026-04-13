@@ -23,18 +23,24 @@ export default async function InvoicesPage({
 }) {
   const { organizationId } = await requireOrganization();
   const params = await searchParams;
+
+  // Debug: log the exact filter values being passed to the query
+  const filters = {
+    search: params.search,
+    tier: params.tier,
+    company: params.company,
+    reportStatus: params.report,
+    scanId: params.scan || undefined,
+  };
+  console.log("[InvoicesPage] filters:", JSON.stringify(filters));
+
   const [invoices, companies, suppliers, scanList] = await Promise.all([
-    getInvoices(organizationId, {
-      search: params.search,
-      tier: params.tier,
-      company: params.company,
-      reportStatus: params.report,
-      scanId: params.scan || undefined,
-    }),
+    getInvoices(organizationId, filters),
     getCompanyList(organizationId),
     getSuppliers(organizationId),
     getScanListForFilter(organizationId),
   ]);
+  console.log("[InvoicesPage] results:", invoices.length, "invoices for scanId:", filters.scanId ?? "all");
 
   // Exports always use INCLUDED only
   const exportQuery = new URLSearchParams();

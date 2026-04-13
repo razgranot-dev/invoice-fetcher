@@ -168,15 +168,17 @@ export async function POST(req: NextRequest) {
         }));
 
         // Insert new invoices (skipDuplicates for idempotency)
-        await bulkCreateInvoices(orgId, scan.id, invoiceRows);
+        const createResult = await bulkCreateInvoices(orgId, scan.id, invoiceRows);
+        console.log(`[Scan ${scan.id}] bulkCreate: ${createResult.count} new, ${invoiceRows.length} total`);
 
         // Re-associate existing duplicates with this scan so the scan
         // filter works correctly — the latest scan always owns its invoices
         const messageIds = invoiceRows
           .map((r) => r.gmailMessageId)
           .filter((id) => !id.startsWith("unknown-"));
+        console.log(`[Scan ${scan.id}] messageIds for re-association: ${messageIds.length} (${invoiceRows.length - messageIds.length} unknown)`);
         if (messageIds.length > 0) {
-          await db.invoice.updateMany({
+          const reassocResult = await db.invoice.updateMany({
             where: {
               organizationId: orgId,
               gmailMessageId: { in: messageIds },
@@ -184,6 +186,7 @@ export async function POST(req: NextRequest) {
             },
             data: { scanId: scan.id },
           });
+          console.log(`[Scan ${scan.id}] re-associated ${reassocResult.count} existing invoices`);
         }
       }
 

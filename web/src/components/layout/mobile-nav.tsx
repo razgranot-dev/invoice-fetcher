@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -13,6 +13,9 @@ import {
   Receipt,
   X,
 } from "lucide-react";
+import { useCallback, useEffect } from "react";
+
+const FILTER_STORAGE_KEY = "invoice-filters";
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -30,6 +33,37 @@ interface MobileNavProps {
 
 export function MobileNav({ open, onClose }: MobileNavProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // When on /invoices, persist current filter params to localStorage
+  useEffect(() => {
+    if (!pathname.startsWith("/invoices")) return;
+    const qs = searchParams.toString();
+    try {
+      if (qs) {
+        localStorage.setItem(FILTER_STORAGE_KEY, qs);
+      }
+    } catch {}
+  }, [pathname, searchParams]);
+
+  const handleNavClick = useCallback(
+    (e: React.MouseEvent, item: { href: string }) => {
+      if (item.href === "/invoices" && !pathname.startsWith("/invoices")) {
+        try {
+          const saved = localStorage.getItem(FILTER_STORAGE_KEY);
+          if (saved) {
+            e.preventDefault();
+            router.push(`/invoices?${saved}`);
+            onClose();
+            return;
+          }
+        } catch {}
+      }
+      onClose();
+    },
+    [pathname, router, onClose]
+  );
 
   if (!open) return null;
 
@@ -67,7 +101,7 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
               <Link
                 key={item.href}
                 href={item.href}
-                onClick={onClose}
+                onClick={(e) => handleNavClick(e, item)}
                 className={cn(
                   "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors",
                   isActive

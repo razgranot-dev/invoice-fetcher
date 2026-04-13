@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   LayoutDashboard,
@@ -13,7 +13,9 @@ import {
   Receipt,
   ChevronLeft,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
+
+const FILTER_STORAGE_KEY = "invoice-filters";
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
@@ -29,7 +31,37 @@ const secondaryNav = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [collapsed, setCollapsed] = useState(false);
+
+  // When on /invoices, persist current filter params to localStorage
+  useEffect(() => {
+    if (!pathname.startsWith("/invoices")) return;
+    const qs = searchParams.toString();
+    try {
+      if (qs) {
+        localStorage.setItem(FILTER_STORAGE_KEY, qs);
+      }
+    } catch {}
+  }, [pathname, searchParams]);
+
+  const handleNavClick = useCallback(
+    (e: React.MouseEvent, item: { href: string }) => {
+      // For Invoices link: restore saved filter params when navigating from elsewhere
+      if (item.href === "/invoices" && !pathname.startsWith("/invoices")) {
+        try {
+          const saved = localStorage.getItem(FILTER_STORAGE_KEY);
+          if (saved) {
+            e.preventDefault();
+            router.push(`/invoices?${saved}`);
+            return;
+          }
+        } catch {}
+      }
+    },
+    [pathname, router]
+  );
 
   return (
     <aside
@@ -59,6 +91,7 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
+              onClick={(e) => handleNavClick(e, item)}
               className={cn(
                 "flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
                 isActive
