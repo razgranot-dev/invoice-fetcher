@@ -24,7 +24,9 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
 
     intervalRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`/api/exports/${exportId}`);
+        const res = await fetch(`/api/exports/${exportId}?t=${Date.now()}`, {
+          cache: "no-store",
+        });
         if (!res.ok) return;
         const data = await res.json();
         const exp = data.export;

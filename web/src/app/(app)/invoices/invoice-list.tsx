@@ -26,7 +26,22 @@ interface Invoice {
   currency: string;
   date: string | null;
   classificationTier: string;
+  classificationScore: number;
+  hasAttachment: boolean;
   reportStatus: string;
+}
+
+function getReviewReason(inv: Invoice): string {
+  if (inv.reportStatus !== "EXCLUDED") return "";
+  if (inv.classificationTier === "possible_financial_email") {
+    if (inv.amount != null) return "Payment signal";
+    if (inv.hasAttachment) return "PDF-only invoice";
+    return "Weak billing signal";
+  }
+  if (inv.classificationTier === "not_invoice") {
+    return "Insufficient content";
+  }
+  return "";
 }
 
 interface InvoiceListProps {
@@ -209,7 +224,17 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       : "\u2014"}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge variant={badge.variant}>{badge.label}</Badge>
+                    <div className="flex items-center gap-1.5">
+                      <Badge variant={badge.variant}>{badge.label}</Badge>
+                      {(() => {
+                        const reason = getReviewReason(inv);
+                        return reason ? (
+                          <span className="text-[10px] font-medium text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400 px-1.5 py-0.5 rounded whitespace-nowrap">
+                            {reason}
+                          </span>
+                        ) : null;
+                      })()}
+                    </div>
                   </td>
                 </tr>
               );
@@ -278,6 +303,14 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                   <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
                     {inv.subject}
                   </p>
+                  {(() => {
+                    const reason = getReviewReason(inv);
+                    return reason ? (
+                      <span className="inline-block text-[10px] font-medium text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400 px-1.5 py-0.5 rounded mt-1">
+                        {reason}
+                      </span>
+                    ) : null;
+                  })()}
                   <div className="flex items-center justify-between text-xs text-muted-foreground pt-1.5">
                     <span>
                       {inv.date

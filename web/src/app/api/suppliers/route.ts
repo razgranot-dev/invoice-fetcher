@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { toggleSupplierRelevance, getSuppliers, getDomainsForBrand } from "@/lib/data/suppliers";
 import { db } from "@/lib/db";
@@ -54,6 +55,9 @@ export async function PATCH(req: NextRequest) {
     });
     invoicesUpdated = result.count;
   }
+
+  // Invalidate the cached /invoices page so navigation back shows fresh data
+  revalidatePath("/invoices");
 
   return NextResponse.json({ supplier, invoicesUpdated });
 }
