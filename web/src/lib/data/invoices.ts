@@ -115,9 +115,13 @@ export async function getCompanyList(organizationId: string) {
   }));
 }
 
-/** Lightweight scan list for the Invoices page dropdown */
+/** Lightweight scan list for the Invoices page dropdown.
+ *  Uses _count.invoices for the real DB count (not the Scan model's
+ *  invoiceCount which reflects how many passed the quality filter,
+ *  not how many DB rows actually belong to this scan).
+ */
 export async function getScanListForFilter(organizationId: string) {
-  return db.scan.findMany({
+  const scans = await db.scan.findMany({
     where: { organizationId, status: "COMPLETED" },
     orderBy: { createdAt: "desc" },
     take: 20,
@@ -125,10 +129,17 @@ export async function getScanListForFilter(organizationId: string) {
       id: true,
       createdAt: true,
       totalMessages: true,
-      invoiceCount: true,
       daysBack: true,
+      _count: { select: { invoices: true } },
     },
   });
+  return scans.map((s) => ({
+    id: s.id,
+    createdAt: s.createdAt,
+    totalMessages: s.totalMessages,
+    invoiceCount: s._count.invoices,
+    daysBack: s.daysBack,
+  }));
 }
 
 export async function bulkCreateInvoices(

@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { createScan, getScans, updateScanStatus, updateScanProgress } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
+import { db } from "@/lib/db";
 import { dispatchScan } from "@/lib/worker";
 
 /** Extract clean domain from an email like "Name <user@domain.com>" or "user@domain.com" */
@@ -145,30 +146,45 @@ export async function POST(req: NextRequest) {
       const persistable = result.invoices.filter(shouldPersist);
 
       if (persistable.length > 0) {
-        await bulkCreateInvoices(
-          orgId,
-          scan.id,
-          persistable.map((inv) => ({
-            gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            subject: inv.subject ?? "(no subject)",
-            sender: inv.sender ?? "",
-            senderDomain: extractDomain(inv.sender),
-            company: inv.company || extractCompany(inv.sender) || undefined,
-            date: inv.date ? new Date(inv.date) : undefined,
-            amount: inv.amount ?? undefined,
-            currency: inv.currency ?? "ILS",
-            classificationTier: inv.classification_tier ?? "not_invoice",
-            classificationScore: inv.classification_score ?? 0,
-            classificationSignals: inv.classification_signals,
-            bodyHtml: inv.body_html || undefined,
-            hasAttachment: (inv.attachments?.length ?? 0) > 0,
-            attachmentPath: inv.saved_path || undefined,
-            notes: inv.notes || undefined,
-            reportStatus: INCLUDED_TIERS.has(inv.classification_tier ?? "")
-              ? ("INCLUDED" as const)
-              : ("EXCLUDED" as const),
-          }))
-        );
+        const invoiceRows = persistable.map((inv) => ({
+          gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          subject: inv.subject ?? "(no subject)",
+          sender: inv.sender ?? "",
+          senderDomain: extractDomain(inv.sender),
+          company: inv.company || extractCompany(inv.sender) || undefined,
+          date: inv.date ? new Date(inv.date) : undefined,
+          amount: inv.amount ?? undefined,
+          currency: inv.currency ?? "ILS",
+          classificationTier: inv.classification_tier ?? "not_invoice",
+          classificationScore: inv.classification_score ?? 0,
+          classificationSignals: inv.classification_signals,
+          bodyHtml: inv.body_html || undefined,
+          hasAttachment: (inv.attachments?.length ?? 0) > 0,
+          attachmentPath: inv.saved_path || undefined,
+          notes: inv.notes || undefined,
+          reportStatus: INCLUDED_TIERS.has(inv.classification_tier ?? "")
+            ? ("INCLUDED" as const)
+            : ("EXCLUDED" as const),
+        }));
+
+        // Insert new invoices (skipDuplicates for idempotency)
+        await bulkCreateInvoices(orgId, scan.id, invoiceRows);
+
+        // Re-associate existing duplicates with this scan so the scan
+        // filter works correctly — the latest scan always owns its invoices
+        const messageIds = invoiceRows
+          .map((r) => r.gmailMessageId)
+          .filter((id) => !id.startsWith("unknown-"));
+        if (messageIds.length > 0) {
+          await db.invoice.updateMany({
+            where: {
+              organizationId: orgId,
+              gmailMessageId: { in: messageIds },
+              scanId: { not: scan.id },
+            },
+            data: { scanId: scan.id },
+          });
+        }
       }
 
       await updateScanStatus(orgId, scan.id, {
