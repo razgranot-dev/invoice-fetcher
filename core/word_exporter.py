@@ -1,36 +1,50 @@
 """
 Export invoices to a professional Word document (.docx).
 
-Supports:
-- Bilingual headers (Hebrew / English)
-- Per-invoice sections with full metadata
-- Optional embedded screenshot images
-- Summary statistics
+Structure:
+  1. Title: "דוח קבלות" (bold, large, RTL)
+  2. Subtitle: date range of invoices
+  3. Main table: תאריך / סכום / ספק + total row
+  4. Notes section: receipt counts by currency
+  5. Exchange rates section: BOI rates for USD invoices
+  6. RTL Hebrew throughout, professional formatting
 """
 
 import os
 import logging
-from datetime import date, datetime
+import urllib.request
+import json
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from docx import Document
-from docx.shared import Pt, Inches, Cm, RGBColor
+from docx.shared import Pt, Cm, RGBColor, Emu
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
+from docx.oxml.ns import qn
 
 logger = logging.getLogger(__name__)
 
-TIER_LABELS = {
-    "confirmed_invoice": "\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05de\u05d0\u05d5\u05de\u05ea\u05ea",      # חשבונית מאומתת
-    "likely_invoice": "\u05db\u05e0\u05e8\u05d0\u05d4 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea",                # כנראה חשבונית
-    "possible_financial_email": "\u05de\u05d9\u05d9\u05dc \u05e4\u05d9\u05e0\u05e0\u05e1\u05d9 \u05dc\u05d1\u05d3\u05d9\u05e7\u05d4",  # מייל פיננסי לבדיקה
-    "not_invoice": "\u05dc\u05d0 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea",                                      # לא חשבונית
+HEBREW_MONTHS = {
+    1: "\u05d9\u05e0\u05d5\u05d0\u05e8",      # ינואר
+    2: "\u05e4\u05d1\u05e8\u05d5\u05d0\u05e8",  # פברואר
+    3: "\u05de\u05e8\u05e5",                      # מרץ
+    4: "\u05d0\u05e4\u05e8\u05d9\u05dc",          # אפריל
+    5: "\u05de\u05d0\u05d9",                      # מאי
+    6: "\u05d9\u05d5\u05e0\u05d9",                # יוני
+    7: "\u05d9\u05d5\u05dc\u05d9",                # יולי
+    8: "\u05d0\u05d5\u05d2\u05d5\u05e1\u05d8",    # אוגוסט
+    9: "\u05e1\u05e4\u05d8\u05de\u05d1\u05e8",    # ספטמבר
+    10: "\u05d0\u05d5\u05e7\u05d8\u05d5\u05d1\u05e8",  # אוקטובר
+    11: "\u05e0\u05d5\u05d1\u05de\u05d1\u05e8",  # נובמבר
+    12: "\u05d3\u05e6\u05de\u05d1\u05e8",          # דצמבר
 }
 
 
+# ── RTL helpers ──────────────────────────────────────────────────────────────
+
 def _set_rtl(paragraph):
-    """Set paragraph direction to RTL for Hebrew content."""
-    from docx.oxml.ns import qn
+    """Set paragraph direction to RTL."""
     pPr = paragraph._p.get_or_add_pPr()
     bidi = pPr.makeelement(qn("w:bidi"), {})
     pPr.append(bidi)
@@ -42,37 +56,150 @@ def _set_cell_rtl(cell):
         _set_rtl(p)
 
 
-def _add_styled_heading(doc: Document, text: str, level: int = 1):
-    """Add a heading with consistent styling."""
-    h = doc.add_heading(text, level=level)
-    for run in h.runs:
-        run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
-    _set_rtl(h)
-    h.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
-    return h
+def _set_table_rtl(table):
+    """Set table visual layout to RTL (columns flow right-to-left)."""
+    tbl_pr = table._tbl.tblPr
+    if tbl_pr is None:
+        tbl_pr = table._tbl._add_tblPr()
+    bidi = tbl_pr.makeelement(qn("w:bidiVisual"), {})
+    tbl_pr.append(bidi)
 
 
-def _add_key_value(doc: Document, key: str, value: str):
-    """Add a key: value paragraph with RTL support."""
-    p = doc.add_paragraph()
-    _set_rtl(p)
-    p.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
-    run_key = p.add_run(f"{key}: ")
-    run_key.bold = True
-    run_key.font.size = Pt(10)
-    run_key.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
-    run_val = p.add_run(value)
-    run_val.font.size = Pt(10)
-    return p
+def _set_section_rtl(section):
+    """Set the document section to RTL."""
+    sect_pr = section._sectPr
+    bidi = sect_pr.makeelement(qn("w:bidi"), {})
+    sect_pr.append(bidi)
 
 
-def _format_currency(amount: float | None, currency: str = "ILS") -> str:
+# ── Currency formatting ─────────────────────────────────────────────────────
+
+def _format_amount(amount: float | None, currency: str = "ILS") -> str:
     if amount is None:
-        return "—"
+        return "\u2014"
     symbols = {"ILS": "\u20aa", "USD": "$", "EUR": "\u20ac", "GBP": "\u00a3"}
     sym = symbols.get(currency, currency + " ")
     return f"{sym}{amount:,.2f}"
 
+
+# ── Date helpers ─────────────────────────────────────────────────────────────
+
+def _parse_date(d) -> date | None:
+    if isinstance(d, date):
+        return d
+    if isinstance(d, datetime):
+        return d.date()
+    if isinstance(d, str):
+        for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(d[:10], fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+def _date_range_subtitle(rows: list[dict]) -> str:
+    """Build Hebrew date range string like 'ינואר 2026 – אפריל 2026'."""
+    dates = [_parse_date(r.get("date")) for r in rows]
+    dates = [d for d in dates if d is not None]
+    if not dates:
+        return ""
+    min_d, max_d = min(dates), max(dates)
+    start = f"{HEBREW_MONTHS[min_d.month]} {min_d.year}"
+    end = f"{HEBREW_MONTHS[max_d.month]} {max_d.year}"
+    if start == end:
+        return start
+    return f"{start} \u2013 {end}"
+
+
+# ── Bank of Israel exchange rates ────────────────────────────────────────────
+
+def _find_business_day(d: date) -> tuple[date, bool]:
+    """Walk back to the nearest business day (Mon-Fri). Returns (date, was_weekend)."""
+    original = d
+    while d.weekday() >= 5:  # 5=Sat, 6=Sun
+        d -= timedelta(days=1)
+    return d, d != original
+
+
+def _fetch_boi_rate(d: date) -> float | None:
+    """Fetch USD/ILS exchange rate from Bank of Israel for a given date."""
+    biz_day, _ = _find_business_day(d)
+    ds = biz_day.strftime("%Y-%m-%d")
+    url = (
+        f"https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/"
+        f"BOI.STATISTICS/EXR/1.0/RER_USD_ILS"
+        f"?startperiod={ds}&endperiod={ds}&format=sdmx-json"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        observations = data["data"]["dataSets"][0]["series"]["0:0:0:0"]["observations"]
+        for key in observations:
+            return float(observations[key][0])
+    except Exception as e:
+        logger.warning("Failed to fetch BOI rate for %s: %s", ds, e)
+    return None
+
+
+def _get_exchange_rates(rows: list[dict]) -> list[dict]:
+    """For each USD invoice, fetch the BOI exchange rate. Returns list of rate info dicts."""
+    usd_dates: dict[str, date] = {}
+    for r in rows:
+        if (r.get("currency") or "ILS").upper() != "USD":
+            continue
+        d = _parse_date(r.get("date"))
+        if d:
+            ds = d.strftime("%Y-%m-%d")
+            if ds not in usd_dates:
+                usd_dates[ds] = d
+
+    rates = []
+    for ds, d in sorted(usd_dates.items()):
+        biz_day, was_weekend = _find_business_day(d)
+        rate = _fetch_boi_rate(d)
+        entry = {
+            "date": ds,
+            "biz_day": biz_day.strftime("%Y-%m-%d"),
+            "was_weekend": was_weekend,
+            "rate": rate,
+        }
+        rates.append(entry)
+    return rates
+
+
+# ── Table styling helpers ────────────────────────────────────────────────────
+
+def _set_cell_borders(cell, color="4472C4"):
+    """Set thin borders on a cell."""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    borders = tc_pr.makeelement(qn("w:tcBorders"), {})
+    for edge in ("top", "left", "bottom", "right"):
+        el = borders.makeelement(qn(f"w:{edge}"), {
+            qn("w:val"): "single",
+            qn("w:sz"): "4",
+            qn("w:space"): "0",
+            qn("w:color"): color,
+        })
+        borders.append(el)
+    tc_pr.append(borders)
+
+
+def _shade_cell(cell, color: str):
+    """Set cell background color."""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shading = tc_pr.makeelement(qn("w:shd"), {
+        qn("w:val"): "clear",
+        qn("w:color"): "auto",
+        qn("w:fill"): color,
+    })
+    tc_pr.append(shading)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN EXPORT FUNCTION
+# ══════════════════════════════════════════════════════════════════════════════
 
 def create_invoice_report(
     rows: list[dict],
@@ -80,16 +207,15 @@ def create_invoice_report(
     filename: str | None = None,
     organization_name: str | None = None,
 ) -> str | None:
-    """Create a professional .docx invoice report.
+    """Create a professional .docx invoice report in Hebrew RTL format.
 
     Args:
-        rows: list of invoice dicts. Supported keys:
-            - id, company, subject, sender, amount, currency,
-              date, classification_tier, has_attachment, scan_id, notes
-            - Legacy keys also supported: description, date, amount, currency, notes
+        rows: list of invoice dicts with keys:
+            id, company, subject, sender, amount, currency,
+            date, classification_tier, has_attachment, scan_id, notes
         output_dir: directory to save the file
         filename: optional filename override
-        organization_name: org name for the header
+        organization_name: org name for the page header
 
     Returns:
         Path to created .docx file, or None if rows is empty.
@@ -104,205 +230,222 @@ def create_invoice_report(
 
     doc = Document()
 
-    # -- Styles --
+    # -- Global styles --
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
     style.font.size = Pt(10)
 
-    # -- Title page --
-    org_label = organization_name or "\u05d3\u05d5\u05d7 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea"  # דוח חשבוניות
-    title = _add_styled_heading(doc, org_label, level=1)
+    # -- RTL section --
+    section = doc.sections[0]
+    _set_section_rtl(section)
+    section.left_margin = Cm(2)
+    section.right_margin = Cm(2)
 
-    subtitle = doc.add_paragraph()
-    _set_rtl(subtitle)
-    subtitle.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
-    run = subtitle.add_run(
-        f"\u05d3\u05d5\u05d7 \u05d9\u05d9\u05e6\u05d5\u05d0 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea  \u2022  "  # דוח ייצוא חשבוניות
-        f"\u05d4\u05d5\u05e4\u05e7 {datetime.now().strftime('%d/%m/%Y %H:%M')}  \u2022  "  # הופק
-        f"{len(rows)} \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea"  # חשבוניות
+    # -- Page header --
+    header = section.header
+    header_para = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+    _set_rtl(header_para)
+    header_para.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+    org_label = organization_name or ""
+    header_run = header_para.add_run(
+        f"{org_label}  \u2022  {datetime.now().strftime('%d/%m/%Y')}" if org_label
+        else datetime.now().strftime('%d/%m/%Y')
     )
-    run.font.size = Pt(9)
-    run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+    header_run.font.size = Pt(8)
+    header_run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+
+    # ── 1. Title ─────────────────────────────────────────────────────────
+    title_para = doc.add_paragraph()
+    _set_rtl(title_para)
+    title_para.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+    title_run = title_para.add_run("\u05d3\u05d5\u05d7 \u05e7\u05d1\u05dc\u05d5\u05ea")  # דוח קבלות
+    title_run.bold = True
+    title_run.font.size = Pt(22)
+    title_run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
+
+    # ── 2. Subtitle — date range ─────────────────────────────────────────
+    subtitle_text = _date_range_subtitle(rows)
+    if subtitle_text:
+        sub_para = doc.add_paragraph()
+        _set_rtl(sub_para)
+        sub_para.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+        sub_run = sub_para.add_run(subtitle_text)
+        sub_run.font.size = Pt(13)
+        sub_run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
 
     doc.add_paragraph("")  # spacer
 
-    # -- Summary table --
-    total_amount = sum(r.get("amount") or 0 for r in rows)
-    tiers = {}
-    for r in rows:
-        t = r.get("classification_tier", "unknown")
-        tiers[t] = tiers.get(t, 0) + 1
-
-    _add_styled_heading(doc, "\u05e1\u05d9\u05db\u05d5\u05dd", level=2)  # סיכום
-
-    summary_table = doc.add_table(rows=1, cols=4)
-    summary_table.style = "Light List Accent 1"
-    summary_table.alignment = WD_TABLE_ALIGNMENT.LEFT
-
-    headers = [
-        "\u05e1\u05d4\"\u05db \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea",  # סה"כ חשבוניות
-        "\u05e1\u05d4\"\u05db \u05e1\u05db\u05d5\u05dd",                              # סה"כ סכום
-        "\u05e1\u05e4\u05e7\u05d9\u05dd",                                              # ספקים
-        "\u05e1\u05d9\u05d5\u05d5\u05d2 \u05de\u05d5\u05d1\u05d9\u05dc",              # סיווג מוביל
+    # ── 3. Main table — תאריך / סכום / ספק ───────────────────────────────
+    # Headers (RTL order: rightmost column first visually)
+    col_headers = [
+        "\u05ea\u05d0\u05e8\u05d9\u05da",  # תאריך
+        "\u05e1\u05db\u05d5\u05dd",          # סכום
+        "\u05e1\u05e4\u05e7",                # ספק
     ]
-    for i, h in enumerate(headers):
-        cell = summary_table.rows[0].cells[i]
+
+    table = doc.add_table(rows=1, cols=3)
+    _set_table_rtl(table)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+    # Header row
+    hdr_cells = table.rows[0].cells
+    for i, h in enumerate(col_headers):
+        cell = hdr_cells[i]
         cell.text = h
         _set_cell_rtl(cell)
+        _set_cell_borders(cell, "2F5496")
+        _shade_cell(cell, "2F5496")
         for p in cell.paragraphs:
             p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
             for run in p.runs:
                 run.bold = True
-                run.font.size = Pt(9)
+                run.font.size = Pt(10)
+                run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
-    companies = set(r.get("company") for r in rows if r.get("company"))
-    # Exclude "not_invoice" from the top-tier summary — it's noise
-    relevant_tiers = {k: v for k, v in tiers.items() if k != "not_invoice"}
-    top_tier = max(relevant_tiers, key=relevant_tiers.get) if relevant_tiers else (max(tiers, key=tiers.get) if tiers else "\u2014")
+    # Compute totals for ILS
+    total_ils = 0.0
+    ils_count = 0
+    usd_count = 0
+    for r in rows:
+        currency = (r.get("currency") or "ILS").upper()
+        amount = r.get("amount") or 0
+        if currency == "ILS":
+            total_ils += amount
+            ils_count += 1
+        elif currency == "USD":
+            usd_count += 1
 
-    values = [
-        str(len(rows)),
-        _format_currency(total_amount, "ILS"),
-        str(len(companies)),
-        TIER_LABELS.get(top_tier, top_tier),
+    # Data rows
+    for idx, row in enumerate(rows):
+        d = _parse_date(row.get("date"))
+        date_str = d.strftime("%d/%m/%Y") if d else "\u2014"
+        amount = row.get("amount")
+        currency = (row.get("currency") or "ILS").upper()
+        amount_str = _format_amount(amount, currency)
+        supplier = row.get("company") or row.get("description") or "\u2014"
+
+        cells = table.add_row().cells
+        cell_values = [date_str, amount_str, supplier]
+        stripe_color = "F2F6FC" if idx % 2 == 0 else "FFFFFF"
+        for i, val in enumerate(cell_values):
+            cell = cells[i]
+            cell.text = val
+            _set_cell_rtl(cell)
+            _set_cell_borders(cell, "B4C6E7")
+            _shade_cell(cell, stripe_color)
+            for p in cell.paragraphs:
+                p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                for run in p.runs:
+                    run.font.size = Pt(9)
+
+    # Total row
+    total_cells = table.add_row().cells
+    total_values = [
+        "\u05e1\u05d4\u05f4\u05db",  # סה״כ
+        _format_amount(total_ils, "ILS"),
+        "",
     ]
-    data_row = summary_table.add_row()
-    for i, v in enumerate(values):
-        cell = data_row.cells[i]
-        cell.text = v
+    for i, val in enumerate(total_values):
+        cell = total_cells[i]
+        cell.text = val
         _set_cell_rtl(cell)
+        _set_cell_borders(cell, "2F5496")
+        _shade_cell(cell, "D6E4F0")
         for p in cell.paragraphs:
             p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
             for run in p.runs:
+                run.bold = True
                 run.font.size = Pt(10)
 
     doc.add_paragraph("")  # spacer
 
-    # -- Invoice detail table --
-    _add_styled_heading(doc, "\u05e4\u05d9\u05e8\u05d5\u05d8 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea", level=2)  # פירוט חשבוניות
+    # ── 4. Notes section — הערות ──────────────────────────────────────────
+    notes_heading = doc.add_paragraph()
+    _set_rtl(notes_heading)
+    notes_heading.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+    run = notes_heading.add_run("\u05d4\u05e2\u05e8\u05d5\u05ea")  # הערות
+    run.bold = True
+    run.font.size = Pt(13)
+    run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
 
-    detail_headers = [
-        "#",
-        "\u05e1\u05e4\u05e7",           # ספק
-        "\u05e0\u05d5\u05e9\u05d0",     # נושא
-        "\u05e1\u05db\u05d5\u05dd",     # סכום
-        "\u05ea\u05d0\u05e8\u05d9\u05da",  # תאריך
-        "\u05e1\u05d9\u05d5\u05d5\u05d2",  # סיווג
-        "\u05de\u05d9\u05d9\u05dc \u05de\u05e7\u05d5\u05e8",  # מייל מקור
+    notes_lines = [
+        f"\u05e1\u05d4\u05f4\u05db \u05e7\u05d1\u05dc\u05d5\u05ea \u05d1\u05d3\u05d5\u05d7: {len(rows)}",  # סה״כ קבלות בדוח: X
+        f'\u05e7\u05d1\u05dc\u05d5\u05ea \u05d1\u05e9"\u05d7: {ils_count}',  # קבלות בש"ח: X
+        f"\u05e7\u05d1\u05dc\u05d5\u05ea \u05d1\u05d3\u05d5\u05dc\u05e8: {usd_count}",  # קבלות בדולר: X
     ]
-    detail_table = doc.add_table(rows=1, cols=len(detail_headers))
-    detail_table.style = "Light List Accent 1"
-    detail_table.alignment = WD_TABLE_ALIGNMENT.LEFT
+    for line in notes_lines:
+        p = doc.add_paragraph()
+        _set_rtl(p)
+        p.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+        r = p.add_run(line)
+        r.font.size = Pt(10)
 
-    header_row = detail_table.rows[0]
-    for i, h in enumerate(detail_headers):
-        cell = header_row.cells[i]
-        cell.text = h
-        _set_cell_rtl(cell)
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.bold = True
-                run.font.size = Pt(8)
+    doc.add_paragraph("")  # spacer
 
-    for idx, row in enumerate(rows, start=1):
-        amount = row.get("amount")
-        currency = row.get("currency", "ILS")
-        tier = row.get("classification_tier", "")
+    # ── 5. Exchange rates section — שערי חליפין ───────────────────────────
+    if usd_count > 0:
+        rates_heading = doc.add_paragraph()
+        _set_rtl(rates_heading)
+        rates_heading.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+        run = rates_heading.add_run("\u05e9\u05e2\u05e8\u05d9 \u05d7\u05dc\u05d9\u05e4\u05d9\u05df")  # שערי חליפין
+        run.bold = True
+        run.font.size = Pt(13)
+        run.font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
 
-        cells = detail_table.add_row().cells
-        cell_values = [
-            str(idx),
-            str(row.get("company") or row.get("description") or "\u2014"),
-            str(row.get("subject") or "\u2014"),
-            _format_currency(amount, currency) if amount else "\u2014",
-            str(row.get("date") or "\u2014"),
-            TIER_LABELS.get(tier, tier or "\u2014"),
-            str(row.get("sender") or "\u2014"),
-        ]
-        for i, val in enumerate(cell_values):
-            cells[i].text = val
-            _set_cell_rtl(cells[i])
-            for p in cells[i].paragraphs:
-                for run in p.runs:
-                    run.font.size = Pt(8)
+        exchange_rates = _get_exchange_rates(rows)
+        if exchange_rates:
+            rate_table = doc.add_table(rows=1, cols=3)
+            _set_table_rtl(rate_table)
+            rate_table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    # -- Summary row --
-    summary_cells = detail_table.add_row().cells
-    summary_cells[0].text = ""
-    summary_cells[1].text = ""
-    summary_cells[2].text = "\u05e1\u05d4\"\u05db"  # סה"כ
-    summary_cells[3].text = _format_currency(total_amount, "ILS")
-    summary_cells[4].text = ""
-    summary_cells[5].text = ""
-    summary_cells[6].text = ""
-    for cell in summary_cells:
-        _set_cell_rtl(cell)
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.bold = True
-                run.font.size = Pt(9)
-
-    # -- Individual invoice sections (for detailed view) --
-    if len(rows) <= 50:  # Only add detail sections for reasonable counts
-        doc.add_page_break()
-        _add_styled_heading(doc, "\u05e4\u05d9\u05e8\u05d5\u05d8 \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05d5\u05ea \u05d1\u05d5\u05d3\u05d3\u05d5\u05ea", level=2)  # פירוט חשבוניות בודדות
-
-        for idx, row in enumerate(rows, start=1):
-            _add_styled_heading(
-                doc,
-                f"\u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea #{idx} \u2014 {row.get('company') or row.get('sender') or '\u05dc\u05d0 \u05d9\u05d3\u05d5\u05e2'}",  # חשבונית # — ... / לא ידוע
-                level=3,
-            )
-
-            _add_key_value(doc, "\u05e0\u05d5\u05e9\u05d0", str(row.get("subject") or "\u2014"))                   # נושא
-            _add_key_value(doc, "\u05e9\u05d5\u05dc\u05d7", str(row.get("sender") or "\u2014"))                     # שולח
-
-            amount = row.get("amount")
-            currency = row.get("currency", "ILS")
-            _add_key_value(doc, "\u05e1\u05db\u05d5\u05dd", _format_currency(amount, currency) if amount else "\u2014")  # סכום
-
-            _add_key_value(doc, "\u05ea\u05d0\u05e8\u05d9\u05da", str(row.get("date") or "\u2014"))                 # תאריך
-
-            tier = row.get("classification_tier", "")
-            _add_key_value(doc, "\u05e1\u05d9\u05d5\u05d5\u05d2", TIER_LABELS.get(tier, tier or "\u2014"))          # סיווג
-
-            has_att = row.get("has_attachment", False)
-            _add_key_value(doc, "\u05e7\u05d1\u05e6\u05d9\u05dd \u05de\u05e6\u05d5\u05e8\u05e4\u05d9\u05dd",      # קבצים מצורפים
-                           "\u05db\u05df" if has_att else "\u05dc\u05d0")                                             # כן / לא
-
-            if row.get("notes"):
-                _add_key_value(doc, "\u05d4\u05e2\u05e8\u05d5\u05ea", str(row["notes"]))                            # הערות
-
-            # Embed screenshot if available
-            screenshot_path = row.get("screenshot_path")
-            screenshot_error = row.get("screenshot_error")
-            if screenshot_path and os.path.isfile(screenshot_path):
-                try:
-                    doc.add_paragraph("")
-                    p = doc.add_paragraph()
+            rate_headers = [
+                "\u05ea\u05d0\u05e8\u05d9\u05da",  # תאריך
+                "\u05e9\u05e2\u05e8 \u05d3\u05d5\u05dc\u05e8/\u05e9\u05e7\u05dc",  # שער דולר/שקל
+                "\u05d4\u05e2\u05e8\u05d5\u05ea",  # הערות
+            ]
+            for i, h in enumerate(rate_headers):
+                cell = rate_table.rows[0].cells[i]
+                cell.text = h
+                _set_cell_rtl(cell)
+                _set_cell_borders(cell, "2F5496")
+                _shade_cell(cell, "2F5496")
+                for p in cell.paragraphs:
                     p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                    run = p.add_run()
-                    run.add_picture(screenshot_path, width=Inches(6))
-                except Exception as e:
-                    supplier = row.get("company") or row.get("sender") or "Unknown"
-                    logger.warning(
-                        "Failed to embed screenshot for invoice #%d (%s): %s",
-                        idx, supplier, e,
-                    )
-                    _add_key_value(doc, "\u05e6\u05d9\u05dc\u05d5\u05dd \u05de\u05e1\u05da", f"(\u05e9\u05d2\u05d9\u05d0\u05d4 \u05d1\u05d4\u05d8\u05de\u05e2\u05d4: {e})")  # צילום מסך / שגיאה בהטמעה
-            elif screenshot_error:
-                _add_key_value(doc, "\u05e6\u05d9\u05dc\u05d5\u05dd \u05de\u05e1\u05da", f"(\u05dc\u05d0 \u05d6\u05de\u05d9\u05df: {screenshot_error})")  # צילום מסך / לא זמין
-            elif screenshot_path:
-                _add_key_value(doc, "\u05e6\u05d9\u05dc\u05d5\u05dd \u05de\u05e1\u05da", "(\u05e7\u05d5\u05d1\u05e5 \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0)")
+                    for run in p.runs:
+                        run.bold = True
+                        run.font.size = Pt(9)
+                        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
 
-            doc.add_paragraph("")  # spacer between invoices
+            for entry in exchange_rates:
+                cells = rate_table.add_row().cells
+                cells[0].text = entry["date"]
+                cells[1].text = f"{entry['rate']:.4f}" if entry["rate"] else "\u05dc\u05d0 \u05d6\u05de\u05d9\u05df"  # לא זמין
+                if entry["was_weekend"]:
+                    cells[2].text = f"\u05e1\u05d5\u05e3 \u05e9\u05d1\u05d5\u05e2 \u2014 \u05e0\u05dc\u05e7\u05d7 \u05e9\u05e2\u05e8 \u05de\u05d9\u05d5\u05dd {entry['biz_day']}"  # סוף שבוע — נלקח שער מיום
+                else:
+                    cells[2].text = ""
+                for cell in cells:
+                    _set_cell_rtl(cell)
+                    _set_cell_borders(cell, "B4C6E7")
+                    for p in cell.paragraphs:
+                        p.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+                        for run in p.runs:
+                            run.font.size = Pt(9)
+        else:
+            p = doc.add_paragraph()
+            _set_rtl(p)
+            p.alignment = WD_PARAGRAPH_ALIGNMENT.RIGHT
+            r = p.add_run("\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d0\u05d7\u05d6\u05e8 \u05e9\u05e2\u05e8\u05d9 \u05d7\u05dc\u05d9\u05e4\u05d9\u05df \u05de\u05d1\u05e0\u05e7 \u05d9\u05e9\u05e8\u05d0\u05dc")  # לא ניתן לאחזר שערי חליפין מבנק ישראל
+            r.font.size = Pt(9)
+            r.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
 
-    # -- Footer --
+    # ── Footer ────────────────────────────────────────────────────────────
     doc.add_paragraph("")
-    footer = doc.add_paragraph()
-    footer.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-    run = footer.add_run(
-        f"\u05d4\u05d5\u05e4\u05e7 \u05e2\u05dc \u05d9\u05d3\u05d9 Invoice Fetcher  \u2022  {datetime.now().strftime('%Y-%m-%d %H:%M')}"  # הופק על ידי
+    footer_para = doc.add_paragraph()
+    footer_para.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+    run = footer_para.add_run(
+        f"\u05d4\u05d5\u05e4\u05e7 \u05e2\u05dc \u05d9\u05d3\u05d9 Invoice Fetcher  \u2022  "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M')}"
     )
     run.font.size = Pt(8)
     run.font.color.rgb = RGBColor(0xAA, 0xAA, 0xAA)

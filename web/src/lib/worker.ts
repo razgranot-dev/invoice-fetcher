@@ -252,6 +252,16 @@ async function readNdjsonStream(
   return { file: fileData, fileSize: fileSize ?? 0, fileCached, failures, failedCount: failures?.length };
 }
 
+/** Normalize known company name variants to canonical brand names */
+function normalizeCompany(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes("facebookmail") || lower === "facebook" ||
+      lower.includes("meta for business") || lower.includes("meta platforms")) {
+    return "Meta";
+  }
+  return name;
+}
+
 /** Extract a display-friendly company name from sender for export fallback */
 function companyFromSender(sender: unknown): string {
   if (!sender || typeof sender !== "string") return "";
@@ -259,7 +269,7 @@ function companyFromSender(sender: unknown): string {
   const m = sender.match(/^(.+?)\s*</);
   if (m) {
     const name = m[1].replace(/^["']|["']$/g, "").trim();
-    if (name && !name.includes("@") && name.length > 1) return name;
+    if (name && !name.includes("@") && name.length > 1) return normalizeCompany(name);
   }
   // Fall back to domain brand
   const dm = sender.match(/@([^>]+)/);
@@ -267,7 +277,8 @@ function companyFromSender(sender: unknown): string {
     const parts = dm[1].split(".");
     const brand = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
     if (brand && brand.length >= 2) {
-      return brand.charAt(0).toUpperCase() + brand.slice(1);
+      const capitalized = brand.charAt(0).toUpperCase() + brand.slice(1);
+      return normalizeCompany(capitalized);
     }
   }
   return "";

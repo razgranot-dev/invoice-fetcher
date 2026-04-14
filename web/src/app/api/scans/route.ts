@@ -48,6 +48,37 @@ function extractCompany(sender?: string): string | undefined {
   return brand.charAt(0).toUpperCase() + brand.slice(1);
 }
 
+/** For PayPal receipts, extract the actual vendor from the subject line.
+ *  e.g. "Receipt for Your Payment to Shopify International" → "Shopify"
+ *  Also normalizes Meta/Facebook variants to "Meta".
+ */
+function extractVendorFromSubject(subject?: string, sender?: string): string | undefined {
+  if (!subject || !sender) return undefined;
+  const domain = extractDomain(sender);
+  if (!domain) return undefined;
+  const domainLower = domain.toLowerCase();
+  // Only apply to PayPal senders
+  if (!domainLower.includes("paypal")) return undefined;
+
+  const m = subject.match(/payment\s+to\s+(.+?)(?:\s+international)?$/i);
+  if (!m) return undefined;
+  const vendor = m[1].trim();
+  const vendorLower = vendor.toLowerCase();
+  if (vendorLower.includes("meta") || vendorLower.includes("facebook")) return "Meta";
+  if (vendorLower.includes("shopify")) return "Shopify";
+  return vendor;
+}
+
+/** Normalize known company name variants to canonical brand names */
+function normalizeCompanyName(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.includes("facebookmail") || lower === "facebook" ||
+      lower.includes("meta for business") || lower.includes("meta platforms")) {
+    return "Meta";
+  }
+  return name;
+}
+
 export async function GET() {
   const session = await auth();
   if (!session?.user?.id) {
@@ -152,7 +183,9 @@ export async function POST(req: NextRequest) {
           subject: inv.subject ?? "(no subject)",
           sender: inv.sender ?? "",
           senderDomain: extractDomain(inv.sender),
-          company: inv.company || extractCompany(inv.sender) || undefined,
+          company: extractVendorFromSubject(inv.subject, inv.sender)
+            || normalizeCompanyName(inv.company || extractCompany(inv.sender) || "")
+            || undefined,
           date: inv.date ? new Date(inv.date) : undefined,
           amount: inv.amount ?? undefined,
           currency: inv.currency ?? "ILS",

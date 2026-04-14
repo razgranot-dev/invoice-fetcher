@@ -69,6 +69,13 @@ const NOISE_SUBDOMAINS = new Set([
   "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
 ]);
 
+/** Canonical brand aliases — merge related domains under one supplier name */
+const BRAND_ALIASES: Record<string, string> = {
+  "facebookmail": "meta",
+  "facebook": "meta",
+  "instagram": "meta",
+};
+
 const COMPOUND_TLDS = new Set([
   "co.il", "co.uk", "co.jp", "co.kr", "co.in", "co.za", "co.nz",
   "com.au", "com.br", "com.mx", "com.ar", "com.tw", "com.sg",
@@ -99,7 +106,8 @@ export function normalizeDomain(raw: string): string {
   }
 
   const parts = base.split(".").filter((p) => p && !NOISE_SUBDOMAINS.has(p));
-  const brand = parts.length > 0 ? parts[parts.length - 1] : base;
+  const raw_brand = parts.length > 0 ? parts[parts.length - 1] : base;
+  const brand = BRAND_ALIASES[raw_brand] ?? raw_brand;
   return (brand.length >= 2 ? brand : base) || domain;
 }
 
