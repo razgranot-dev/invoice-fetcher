@@ -190,6 +190,31 @@ export async function POST(req: NextRequest) {
             console.log(`[Scan ${scan.id}] re-associated chunk ${i}-${i + chunk.length}: ${reassocResult.count} rows`);
           }
         }
+
+        // Backfill bodyHtml for existing invoices that were missing it.
+        // createMany with skipDuplicates does NOT update existing rows,
+        // so invoices from older scans may have NULL bodyHtml.
+        const htmlBackfills = invoiceRows.filter(
+          (r) => r.bodyHtml && !r.gmailMessageId.startsWith("unknown-")
+        );
+        if (htmlBackfills.length > 0) {
+          const backfillResult = await db.$transaction(
+            htmlBackfills.map((r) =>
+              db.invoice.updateMany({
+                where: {
+                  organizationId: orgId,
+                  gmailMessageId: r.gmailMessageId,
+                  bodyHtml: null,
+                },
+                data: { bodyHtml: r.bodyHtml },
+              })
+            )
+          );
+          const filled = backfillResult.reduce((sum, r) => sum + r.count, 0);
+          if (filled > 0) {
+            console.log(`[Scan ${scan.id}] backfilled bodyHtml for ${filled} existing invoices`);
+          }
+        }
       }
 
       // ── Honour existing supplier exclusions ───────────────────────

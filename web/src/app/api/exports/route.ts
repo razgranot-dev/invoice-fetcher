@@ -56,12 +56,13 @@ export async function POST(req: NextRequest) {
     reportStatus: filters.reportStatus,
   }, 10000);
 
-  // Only confirmed + likely invoices go into the main export.
-  // possible_financial_email and not_invoice stay in review flows only.
+  // For Word exports: only confirmed + likely invoices.
+  // For screenshot ZIP: include all tiers so every invoice gets a screenshot.
   const EXPORT_TIERS = new Set(["confirmed_invoice", "likely_invoice"]);
-  const exportable = invoices.filter(
-    (inv) => EXPORT_TIERS.has(inv.classificationTier)
-  );
+  const exportable =
+    format === "ZIP_SCREENSHOTS"
+      ? invoices
+      : invoices.filter((inv) => EXPORT_TIERS.has(inv.classificationTier));
 
   if (exportable.length === 0) {
     return NextResponse.json(

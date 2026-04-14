@@ -621,10 +621,7 @@ def is_screenshot_worthy(invoice: dict[str, Any]) -> tuple[bool, str]:
     if tier == TIER_NOT:
         return False, "skipped: not an invoice"
 
-    if tier == TIER_POSSIBLE:
-        return False, "skipped: insufficient invoice content"
-
-    # confirmed_invoice and likely_invoice always qualify
+    # confirmed, likely, AND possible all qualify for screenshots
     return True, ""
 
 
