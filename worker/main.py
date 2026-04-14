@@ -10,6 +10,8 @@ Start: uvicorn worker.main:app --port 8000
 import logging
 import os
 import sys
+import time
+from threading import Lock
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,44 @@ from core.attachment_handler import AttachmentHandler
 app = FastAPI(title="Invoice Fetcher Worker", version="0.1.0")
 
 
+# ── In-memory file cache (TTL-based) ───────────────────────────────────────
+
+_FILE_CACHE: dict[str, dict] = {}
+_CACHE_TTL = 1800  # 30 minutes
+_cache_lock = Lock()
+
+
+def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
+    """Store a generated file in the in-memory cache."""
+    with _cache_lock:
+        _FILE_CACHE[job_id] = {
+            "data": data,
+            "created": time.time(),
+            **(metadata or {}),
+        }
+        _cache_cleanup()
+
+
+def _cache_get(job_id: str) -> dict | None:
+    """Retrieve a cached file. Returns None if expired or missing."""
+    with _cache_lock:
+        entry = _FILE_CACHE.get(job_id)
+        if not entry:
+            return None
+        if time.time() - entry["created"] > _CACHE_TTL:
+            del _FILE_CACHE[job_id]
+            return None
+        return entry
+
+
+def _cache_cleanup():
+    """Remove expired entries. Called inside _cache_put (already holds lock)."""
+    now = time.time()
+    expired = [k for k, v in _FILE_CACHE.items() if now - v["created"] > _CACHE_TTL]
+    for k in expired:
+        del _FILE_CACHE[k]
+
+
 # ── Request/Response models ──────────────────────────────────────────────
 
 
@@ -69,6 +109,7 @@ class ExportRequest(BaseModel):
     format: str = "csv"  # csv, word
     organization_name: str = ""
     include_screenshots: bool = False
+    job_id: str = ""  # When set, file is cached for later download via GET /export/{job_id}/download
 
 
 # ── Health ───────────────────────────────────────────────────────────────
@@ -303,9 +344,22 @@ async def export_word(req: ExportRequest):
             yield _json.dumps({"progress": 90, "message": "Encoding document..."}) + "\n"
 
             with open(path, "rb") as f:
-                file_data = base64.b64encode(f.read()).decode()
+                file_bytes = f.read()
 
-            result = {"progress": 100, "message": "Complete", "file": file_data}
+            # Cache file for later download when job_id is provided
+            if req.job_id:
+                _cache_put(req.job_id, file_bytes, {
+                    "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "filename": os.path.basename(path),
+                })
+
+            result: dict[str, Any] = {"progress": 100, "message": "Complete"}
+            if req.job_id:
+                result["file_cached"] = True
+                result["file_size"] = len(file_bytes)
+                result["job_id"] = req.job_id
+            else:
+                result["file"] = base64.b64encode(file_bytes).decode()
             if screenshot_failures:
                 result["message"] = f"Complete \u2014 {len(screenshot_failures)} screenshot(s) failed"
                 result["failures"] = screenshot_failures
@@ -462,22 +516,59 @@ async def export_screenshots_zip(req: ExportRequest):
 
             yield _json.dumps({"progress": 95, "message": "Encoding ZIP..."}) + "\n"
 
-            file_data = base64.b64encode(zip_bytes).decode()
             summary = f"{zipped_count} screenshots"
             if failed:
                 summary += f", {len(failed)} failed"
 
-            yield _json.dumps({
+            # Cache file for later download when job_id is provided
+            if req.job_id:
+                _cache_put(req.job_id, zip_bytes, {
+                    "content_type": "application/zip",
+                    "filename": f"screenshots-{req.job_id}.zip",
+                })
+
+            result: dict[str, Any] = {
                 "progress": 100,
                 "message": f"Complete \u2014 {summary}",
-                "file": file_data,
                 "succeeded": zipped_count,
                 "failed_count": len(failed),
                 "failures": failed if failed else None,
-            }) + "\n"
+            }
+            if req.job_id:
+                result["file_cached"] = True
+                result["file_size"] = len(zip_bytes)
+                result["job_id"] = req.job_id
+            else:
+                result["file"] = base64.b64encode(zip_bytes).decode()
+            yield _json.dumps(result) + "\n"
 
         except Exception as e:
             logger.error("ZIP creation failed: %s", e)
             yield _json.dumps({"progress": 100, "message": str(e), "error": str(e)}) + "\n"
 
     return StreamingResponse(_generate(), media_type="application/x-ndjson")
+
+
+# ── File download (serves from in-memory cache) ────────────────────────────
+
+
+@app.get("/export/{job_id}/download")
+async def download_export(job_id: str):
+    """Serve a cached export file. Files expire after 30 minutes."""
+    from starlette.responses import Response
+
+    entry = _cache_get(job_id)
+    if not entry:
+        raise HTTPException(
+            status_code=410,
+            detail="Export file has expired or was not found. Please re-run the export.",
+        )
+
+    return Response(
+        content=entry["data"],
+        media_type=entry.get("content_type", "application/octet-stream"),
+        headers={
+            "Content-Disposition": f'attachment; filename="{entry.get("filename", "export")}"',
+            "Content-Length": str(len(entry["data"])),
+        },
+    )

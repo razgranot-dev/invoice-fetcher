@@ -1,17 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
-import { writeFile, mkdir } from "fs/promises";
-import path from "path";
 import { auth } from "@/lib/auth";
 import { getInvoices } from "@/lib/data/invoices";
 import { createExport, getExports, updateExportStatus, updateExportProgress } from "@/lib/data/exports";
 import { dispatchWordExport, dispatchScreenshotZip } from "@/lib/worker";
 import { db } from "@/lib/db";
-
-// Vercel serverless: process.cwd() is read-only, use /tmp for ephemeral files
-const EXPORTS_DIR = process.env.VERCEL
-  ? path.join("/tmp", "exports")
-  : path.join(process.cwd(), "exports");
 
 export async function GET() {
   const session = await auth();
@@ -99,27 +92,22 @@ export async function POST(req: NextRequest) {
       };
 
       let result: Awaited<ReturnType<typeof dispatchWordExport>>;
-      let fileExt: string;
 
       if (format === "ZIP_SCREENSHOTS") {
         result = await dispatchScreenshotZip(
           exportable as unknown as Array<Record<string, unknown>>,
-          progressCb
+          progressCb,
+          exp.id,
         );
-        fileExt = "zip";
       } else {
         result = await dispatchWordExport(
           exportable as unknown as Array<Record<string, unknown>>,
           org?.name ?? "Organization",
           includeScreenshots,
-          progressCb
+          progressCb,
+          exp.id,
         );
-        fileExt = "docx";
       }
-
-      await mkdir(EXPORTS_DIR, { recursive: true });
-      const filePath = path.join(EXPORTS_DIR, `${exp.id}.${fileExt}`);
-      await writeFile(filePath, result.file);
 
       // Build a human-readable failure summary for the UI
       let completionMessage = "Complete";
@@ -140,8 +128,7 @@ export async function POST(req: NextRequest) {
       await updateExportProgress(orgId, exp.id, 100, completionMessage);
       await updateExportStatus(orgId, exp.id, {
         status: "COMPLETED",
-        filePath,
-        fileSize: result.file.length,
+        fileSize: result.fileSize,
         completedAt: new Date(),
       });
     } catch (e: unknown) {

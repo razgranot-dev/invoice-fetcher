@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
-import { readFile, stat } from "fs/promises";
 import { auth } from "@/lib/auth";
 import { getExportById } from "@/lib/data/exports";
+import { proxyWorkerDownload } from "@/lib/worker";
 
 export async function GET(
   _req: NextRequest,
@@ -24,17 +24,23 @@ export async function GET(
     return new Response("Export not found", { status: 404 });
   }
 
-  if (exp.status !== "COMPLETED" || !exp.filePath) {
+  if (exp.status !== "COMPLETED") {
     return new Response("Export not ready", { status: 409 });
   }
 
   try {
-    const [fileBuffer, fileStat] = await Promise.all([
-      readFile(exp.filePath),
-      stat(exp.filePath),
-    ]);
+    // Proxy the download from the worker's in-memory cache
+    const workerRes = await proxyWorkerDownload(id);
 
-    const ext = exp.format === "WORD" ? "docx" : exp.format === "CSV" ? "csv" : "zip";
+    if (!workerRes.ok) {
+      return new Response(
+        "Export file has expired. Please re-run the export to generate a fresh download.",
+        { status: 410 }
+      );
+    }
+
+    const ext =
+      exp.format === "WORD" ? "docx" : exp.format === "CSV" ? "csv" : "zip";
     const date = exp.createdAt.toISOString().split("T")[0];
     const filename = `invoices-export-${date}.${ext}`;
 
@@ -45,17 +51,18 @@ export async function GET(
           ? "text/csv"
           : "application/zip";
 
-    return new Response(fileBuffer, {
-      headers: {
-        "Content-Type": contentType,
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Content-Length": String(fileStat.size),
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Content-Disposition": `attachment; filename="${filename}"`,
+    };
+    const cl = workerRes.headers.get("Content-Length");
+    if (cl) headers["Content-Length"] = cl;
+
+    return new Response(workerRes.body, { headers });
   } catch {
     return new Response(
-      "Export file is no longer available. On serverless deployments, exported files are ephemeral — re-run the export to generate a fresh download.",
-      { status: 410 }
+      "Failed to retrieve export file from worker. The file may have expired \u2014 re-run the export.",
+      { status: 502 }
     );
   }
 }

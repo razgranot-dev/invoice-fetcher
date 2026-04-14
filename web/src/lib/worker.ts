@@ -159,7 +159,9 @@ export async function dispatchScan(
 }
 
 export interface ExportResult {
-  file: Buffer;
+  file: Buffer | null;
+  fileSize: number;
+  fileCached: boolean;
   failures?: Array<{ supplier: string; date: string; reason: string }>;
   failedCount?: number;
 }
@@ -173,6 +175,8 @@ async function readNdjsonStream(
   onProgress?: (progress: number, message: string) => Promise<void>
 ): Promise<ExportResult> {
   let fileData: Buffer | null = null;
+  let fileSize: number | null = null;
+  let fileCached = false;
   let lastError: string | null = null;
   let failures: Array<{ supplier: string; date: string; reason: string }> | undefined;
 
@@ -182,6 +186,11 @@ async function readNdjsonStream(
       const data = JSON.parse(line);
       if (data.file) {
         fileData = Buffer.from(data.file, "base64");
+        fileSize = fileData.length;
+      }
+      if (data.file_cached) {
+        fileCached = true;
+        fileSize = data.file_size ?? null;
       }
       if (data.failures) {
         failures = data.failures;
@@ -236,11 +245,11 @@ async function readNdjsonStream(
     }
   }
 
-  if (!fileData) {
+  if (!fileData && !fileCached) {
     throw new Error(lastError ?? "Worker returned no file data");
   }
 
-  return { file: fileData, failures, failedCount: failures?.length };
+  return { file: fileData, fileSize: fileSize ?? 0, fileCached, failures, failedCount: failures?.length };
 }
 
 /** Extract a display-friendly company name from sender for export fallback */
@@ -268,7 +277,8 @@ export async function dispatchWordExport(
   invoices: Array<Record<string, unknown>>,
   organizationName: string,
   includeScreenshots = false,
-  onProgress?: (progress: number, message: string) => Promise<void>
+  onProgress?: (progress: number, message: string) => Promise<void>,
+  jobId?: string,
 ): Promise<ExportResult> {
   const mapped = invoices.map((inv) => ({
     id: inv.id ?? "",
@@ -297,6 +307,7 @@ export async function dispatchWordExport(
       organization_name: organizationName,
       format: "word",
       include_screenshots: includeScreenshots,
+      job_id: jobId ?? "",
     }),
     signal: AbortSignal.timeout(timeout),
   });
@@ -311,7 +322,8 @@ export async function dispatchWordExport(
 
 export async function dispatchScreenshotZip(
   invoices: Array<Record<string, unknown>>,
-  onProgress?: (progress: number, message: string) => Promise<void>
+  onProgress?: (progress: number, message: string) => Promise<void>,
+  jobId?: string,
 ): Promise<ExportResult> {
   const mapped = invoices.map((inv) => ({
     id: inv.id ?? "",
@@ -334,6 +346,7 @@ export async function dispatchScreenshotZip(
     body: JSON.stringify({
       invoices: mapped,
       include_screenshots: true,
+      job_id: jobId ?? "",
     }),
     signal: AbortSignal.timeout(300_000),
   });
@@ -344,4 +357,14 @@ export async function dispatchScreenshotZip(
   }
 
   return readNdjsonStream(res, onProgress);
+}
+
+/**
+ * Proxy a file download from the worker's in-memory cache.
+ * Returns the raw fetch Response for streaming to the browser.
+ */
+export async function proxyWorkerDownload(jobId: string): Promise<Response> {
+  return fetch(`${WORKER_URL}/export/${jobId}/download`, {
+    signal: AbortSignal.timeout(30_000),
+  });
 }
