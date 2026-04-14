@@ -5,6 +5,7 @@ import { getInvoices } from "@/lib/data/invoices";
 import { createExport, getExports, updateExportStatus, updateExportProgress } from "@/lib/data/exports";
 import { dispatchWordExport, dispatchScreenshotZip } from "@/lib/worker";
 import { db } from "@/lib/db";
+import { normalizeDomain } from "@/lib/utils";
 
 export async function GET() {
   const session = await auth();
@@ -56,13 +57,32 @@ export async function POST(req: NextRequest) {
     reportStatus: filters.reportStatus,
   }, 10000);
 
+  // Enforce supplier relevance — the DB reportStatus cascade can miss invoices
+  // when company names don't exactly match the supplier brand name. Apply the
+  // same brand-based filter the page uses to guarantee consistency.
+  const excludedSuppliers = await db.supplier.findMany({
+    where: { organizationId: orgId, isRelevant: false },
+    select: { name: true },
+  });
+  const excludedBrands = new Set(
+    excludedSuppliers.map((s) => s.name.toLowerCase())
+  );
+  const included = excludedBrands.size > 0
+    ? invoices.filter((inv) => {
+        const brand =
+          inv.company?.trim().toLowerCase() ||
+          (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
+        return !(brand && excludedBrands.has(brand));
+      })
+    : invoices;
+
   // For Word exports: only confirmed + likely invoices.
   // For screenshot ZIP: include all tiers so every invoice gets a screenshot.
   const EXPORT_TIERS = new Set(["confirmed_invoice", "likely_invoice"]);
   const exportable =
     format === "ZIP_SCREENSHOTS"
-      ? invoices
-      : invoices.filter((inv) => EXPORT_TIERS.has(inv.classificationTier));
+      ? included
+      : included.filter((inv) => EXPORT_TIERS.has(inv.classificationTier));
 
   if (exportable.length === 0) {
     return NextResponse.json(

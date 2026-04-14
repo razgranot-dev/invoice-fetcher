@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { toggleSupplierRelevance, getSuppliers, getDomainsForBrand } from "@/lib/data/suppliers";
 import { db } from "@/lib/db";
+import { normalizeDomain } from "@/lib/utils";
 
 export async function GET() {
   const session = await auth();
@@ -57,7 +58,9 @@ export async function PATCH(req: NextRequest) {
   }
 
   // 4. Also cascade to invoices matched by company name (for vendors
-  //    without a matching senderDomain, e.g. "FLYSTORE", "Gett")
+  //    without a matching senderDomain, e.g. "FLYSTORE", "Gett").
+  //    Match both exact brand name AND all company names that normalize
+  //    to this brand (e.g. "Meta for Business" → company contains "meta").
   const companyResult = await db.invoice.updateMany({
     where: {
       organizationId: orgId,
@@ -70,6 +73,37 @@ export async function PATCH(req: NextRequest) {
     data: { reportStatus: isRelevant ? "INCLUDED" : "EXCLUDED" },
   });
   invoicesUpdated += companyResult.count;
+
+  // 5. Catch remaining invoices by company normalization — handles cases
+  //    like company="Meta for Business" when supplier name is "meta".
+  //    Fetch all uncovered invoices and check via normalizeDomain/company.
+  const remaining = await db.invoice.findMany({
+    where: {
+      organizationId: orgId,
+      reportStatus: isRelevant ? "EXCLUDED" : "INCLUDED",
+      ...(matchingDomains.length > 0
+        ? { senderDomain: { notIn: matchingDomains } }
+        : {}),
+      company: { not: name },
+    },
+    select: { id: true, company: true, senderDomain: true },
+  });
+  const nameLower = name.toLowerCase();
+  const extraIds = remaining
+    .filter((inv) => {
+      const brand =
+        inv.company?.trim().toLowerCase() ||
+        (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
+      return brand === nameLower;
+    })
+    .map((inv) => inv.id);
+  if (extraIds.length > 0) {
+    const extra = await db.invoice.updateMany({
+      where: { id: { in: extraIds } },
+      data: { reportStatus: isRelevant ? "INCLUDED" : "EXCLUDED" },
+    });
+    invoicesUpdated += extra.count;
+  }
 
   // Invalidate the cached /invoices page so navigation back shows fresh data
   revalidatePath("/invoices");
