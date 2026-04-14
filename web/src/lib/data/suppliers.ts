@@ -2,75 +2,58 @@ import { db } from "@/lib/db";
 import { normalizeDomain } from "@/lib/utils";
 
 /**
- * Auto-creates supplier records from invoice senderDomains AND company names,
- * merging variants (info.hostinger.com, billing.hostinger.com → "hostinger").
- * Also picks up invoices that have a company field but no senderDomain.
- * Returns all suppliers with merged invoice counts.
+ * Auto-creates supplier records using company-first brand logic:
+ * each invoice's brand = company (lowercased) || normalizeDomain(senderDomain).
+ * This ensures PayPal receipts with company="Meta" are grouped under "meta",
+ * not under the shared "paypal" domain brand.
+ * Returns all suppliers with accurate invoice counts.
  */
 export async function getSuppliers(organizationId: string) {
-  // Gather distinct sender domains from invoices
-  const domains = await db.invoice.groupBy({
-    by: ["senderDomain"],
-    where: { organizationId, senderDomain: { not: null } },
-    _count: true,
+  // Get minimal invoice data for brand computation
+  const invoices = await db.invoice.findMany({
+    where: { organizationId },
+    select: { senderDomain: true, company: true },
   });
 
-  // Also gather distinct company names (covers invoices with no senderDomain)
-  const companyGroups = await db.invoice.groupBy({
-    by: ["company"],
-    where: { organizationId, company: { not: null } },
-    _count: true,
-  });
-
-  // Merge by normalized brand name from domains
-  const merged = new Map<string, { rawDomains: string[]; count: number }>();
-  for (const d of domains) {
-    if (!d.senderDomain) continue;
-    const brand = normalizeDomain(d.senderDomain);
+  // Compute brand counts using company-first logic
+  // (same logic as the invoices page and export routes)
+  const brandCounts = new Map<string, number>();
+  for (const inv of invoices) {
+    const brand =
+      inv.company?.trim().toLowerCase() ||
+      (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     if (!brand) continue;
-    const existing = merged.get(brand);
-    if (existing) {
-      existing.rawDomains.push(d.senderDomain);
-      existing.count += d._count;
-    } else {
-      merged.set(brand, { rawDomains: [d.senderDomain], count: d._count });
-    }
+    brandCounts.set(brand, (brandCounts.get(brand) ?? 0) + 1);
   }
 
-  // Add company-based suppliers that don't already match a domain brand
-  const brandNamesLower = new Set(
-    Array.from(merged.keys()).map((k) => k.toLowerCase())
-  );
-  for (const c of companyGroups) {
-    if (!c.company) continue;
-    const companyLower = c.company.toLowerCase().trim();
-    // Skip if already covered by a domain brand (exact or substring match)
-    if (brandNamesLower.has(companyLower)) continue;
-    let alreadyCovered = false;
-    for (const b of brandNamesLower) {
-      if (companyLower.includes(b) || b.includes(companyLower)) {
-        alreadyCovered = true;
-        break;
-      }
-    }
-    if (!alreadyCovered) {
-      merged.set(c.company, { rawDomains: [], count: c._count });
-      brandNamesLower.add(companyLower);
-    }
-  }
-
-  // Create supplier records for merged brands (idempotent)
-  if (merged.size > 0) {
+  // Create supplier records for all discovered brands (idempotent)
+  if (brandCounts.size > 0) {
     await db.supplier.createMany({
-      data: Array.from(merged.keys()).map((name) => ({ organizationId, name })),
+      data: Array.from(brandCounts.keys()).map((name) => ({
+        organizationId,
+        name,
+      })),
       skipDuplicates: true,
     });
 
-    // Clean up old duplicate suppliers that used raw domains instead of brands
-    const validNames = Array.from(merged.keys());
-    const stale = await db.supplier.findMany({
-      where: { organizationId, name: { notIn: validNames } },
+    // Migrate isRelevant from old mixed-case suppliers to new lowercase names,
+    // then clean up stale suppliers that no longer match any invoice brand.
+    const validNames = new Set(brandCounts.keys());
+    const existingSuppliers = await db.supplier.findMany({
+      where: { organizationId },
     });
+    const stale = existingSuppliers.filter((s) => !validNames.has(s.name));
+    for (const s of stale) {
+      const lower = s.name.toLowerCase();
+      if (lower !== s.name && validNames.has(lower)) {
+        await db.supplier
+          .update({
+            where: { organizationId_name: { organizationId, name: lower } },
+            data: { isRelevant: s.isRelevant },
+          })
+          .catch(() => {});
+      }
+    }
     if (stale.length > 0) {
       await db.supplier.deleteMany({
         where: { id: { in: stale.map((s) => s.id) } },
@@ -85,14 +68,14 @@ export async function getSuppliers(organizationId: string) {
 
   return suppliers.map((s) => ({
     ...s,
-    invoiceCount: merged.get(s.name)?.count ?? 0,
+    invoiceCount: brandCounts.get(s.name) ?? 0,
   }));
 }
 
 /**
- * Find all raw senderDomain values that normalize to a given brand name.
- * Also matches invoices by company name for suppliers created from the
- * company field (which may not have a matching senderDomain).
+ * Find all raw senderDomain values that DIRECTLY normalize to a given brand name.
+ * Does NOT fall back to company-based domain lookup — those domains may be shared
+ * by multiple vendors (e.g., paypal.co.il serves Meta, Shopify, etc.).
  */
 export async function getDomainsForBrand(
   organizationId: string,
@@ -103,27 +86,11 @@ export async function getDomainsForBrand(
     where: { organizationId, senderDomain: { not: null } },
   });
 
-  const matched = domains
-    .filter((d) => d.senderDomain && normalizeDomain(d.senderDomain) === brandName)
+  return domains
+    .filter(
+      (d) => d.senderDomain && normalizeDomain(d.senderDomain) === brandName
+    )
     .map((d) => d.senderDomain!);
-
-  // If no domain matches, this supplier was created from the company field.
-  // Find domains for invoices where company matches the brand name.
-  if (matched.length === 0) {
-    const companyDomains = await db.invoice.groupBy({
-      by: ["senderDomain"],
-      where: {
-        organizationId,
-        company: { equals: brandName, mode: "insensitive" },
-        senderDomain: { not: null },
-      },
-    });
-    for (const cd of companyDomains) {
-      if (cd.senderDomain) matched.push(cd.senderDomain);
-    }
-  }
-
-  return matched;
 }
 
 export async function toggleSupplierRelevance(

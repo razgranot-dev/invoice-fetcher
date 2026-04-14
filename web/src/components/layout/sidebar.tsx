@@ -48,15 +48,12 @@ export function Sidebar() {
   useEffect(() => {
     if (!pathname.startsWith("/invoices")) return;
     const qs = searchParams.toString();
-    try {
-      if (qs) {
-        localStorage.setItem(FILTER_STORAGE_KEY, qs);
-        setInvoicesHref(`/invoices?${qs}`);
-      } else {
-        localStorage.removeItem(FILTER_STORAGE_KEY);
-        setInvoicesHref("/invoices");
-      }
-    } catch {}
+    if (qs) {
+      try { localStorage.setItem(FILTER_STORAGE_KEY, qs); } catch {}
+    }
+    // Always sync href with current URL; never clear localStorage here —
+    // only the explicit "Clear" button should reset saved filters.
+    setInvoicesHref(qs ? `/invoices?${qs}` : "/invoices");
   }, [pathname, searchParams]);
 
   return (
@@ -88,6 +85,21 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={href}
+              onClick={
+                item.href === "/invoices" && !pathname.startsWith("/invoices")
+                  ? (e) => {
+                      // Force full page load when navigating TO invoices from
+                      // another page — avoids Next.js router cache serving stale data.
+                      e.preventDefault();
+                      let target = "/invoices";
+                      try {
+                        const saved = localStorage.getItem(FILTER_STORAGE_KEY);
+                        if (saved) target = `/invoices?${saved}`;
+                      } catch {}
+                      window.location.href = target;
+                    }
+                  : undefined
+              }
               className={cn(
                 "flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors",
                 isActive

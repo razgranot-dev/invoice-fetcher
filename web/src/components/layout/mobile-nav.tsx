@@ -48,15 +48,11 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
   useEffect(() => {
     if (!pathname.startsWith("/invoices")) return;
     const qs = searchParams.toString();
-    try {
-      if (qs) {
-        localStorage.setItem(FILTER_STORAGE_KEY, qs);
-        setInvoicesHref(`/invoices?${qs}`);
-      } else {
-        localStorage.removeItem(FILTER_STORAGE_KEY);
-        setInvoicesHref("/invoices");
-      }
-    } catch {}
+    if (qs) {
+      try { localStorage.setItem(FILTER_STORAGE_KEY, qs); } catch {}
+    }
+    // Always sync href; never clear localStorage — only "Clear" button resets.
+    setInvoicesHref(qs ? `/invoices?${qs}` : "/invoices");
   }, [pathname, searchParams]);
 
   if (!open) return null;
@@ -96,7 +92,20 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
               <Link
                 key={item.href}
                 href={href}
-                onClick={onClose}
+                onClick={
+                  item.href === "/invoices" && !pathname.startsWith("/invoices")
+                    ? (e) => {
+                        e.preventDefault();
+                        onClose();
+                        let target = "/invoices";
+                        try {
+                          const saved = localStorage.getItem(FILTER_STORAGE_KEY);
+                          if (saved) target = `/invoices?${saved}`;
+                        } catch {}
+                        window.location.href = target;
+                      }
+                    : onClose
+                }
                 className={cn(
                   "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors",
                   isActive

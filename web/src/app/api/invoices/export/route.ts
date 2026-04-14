@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { getInvoices } from "@/lib/data/invoices";
+import { db } from "@/lib/db";
+import { normalizeDomain } from "@/lib/utils";
 
 function escapeCsv(value: string): string {
   if (
@@ -32,7 +34,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = req.nextUrl;
-  const invoices = await getInvoices(
+  const rawInvoices = await getInvoices(
     orgId,
     {
       search: searchParams.get("search") || undefined,
@@ -43,6 +45,24 @@ export async function GET(req: NextRequest) {
     },
     10000
   );
+
+  // Enforce supplier relevance — filter out invoices from excluded suppliers
+  const excludedSuppliers = await db.supplier.findMany({
+    where: { organizationId: orgId, isRelevant: false },
+    select: { name: true },
+  });
+  const excludedBrands = new Set(
+    excludedSuppliers.map((s) => s.name.toLowerCase())
+  );
+  const invoices =
+    excludedBrands.size > 0
+      ? rawInvoices.filter((inv) => {
+          const brand =
+            inv.company?.trim().toLowerCase() ||
+            (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
+          return !(brand && excludedBrands.has(brand));
+        })
+      : rawInvoices;
 
   const headers = [
     "Invoice ID",

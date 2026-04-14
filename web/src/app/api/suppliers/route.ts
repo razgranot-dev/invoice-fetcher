@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
-import { toggleSupplierRelevance, getSuppliers, getDomainsForBrand } from "@/lib/data/suppliers";
+import { toggleSupplierRelevance, getSuppliers } from "@/lib/data/suppliers";
 import { db } from "@/lib/db";
 import { normalizeDomain } from "@/lib/utils";
 
@@ -44,52 +44,15 @@ export async function PATCH(req: NextRequest) {
   // 1. Update the supplier record
   const supplier = await toggleSupplierRelevance(orgId, name, isRelevant);
 
-  // 2. Find ALL raw senderDomains that map to this brand
-  const matchingDomains = await getDomainsForBrand(orgId, name);
-
-  // 3. Cascade to all invoices across all matching domains
-  let invoicesUpdated = 0;
-  if (matchingDomains.length > 0) {
-    const result = await db.invoice.updateMany({
-      where: { organizationId: orgId, senderDomain: { in: matchingDomains } },
-      data: { reportStatus: isRelevant ? "INCLUDED" : "EXCLUDED" },
-    });
-    invoicesUpdated = result.count;
-  }
-
-  // 4. Also cascade to invoices matched by company name (for vendors
-  //    without a matching senderDomain, e.g. "FLYSTORE", "Gett").
-  //    Match both exact brand name AND all company names that normalize
-  //    to this brand (e.g. "Meta for Business" → company contains "meta").
-  const companyResult = await db.invoice.updateMany({
-    where: {
-      organizationId: orgId,
-      company: { equals: name, mode: "insensitive" },
-      // Don't re-update invoices already covered by domain match
-      ...(matchingDomains.length > 0
-        ? { senderDomain: { notIn: matchingDomains } }
-        : {}),
-    },
-    data: { reportStatus: isRelevant ? "INCLUDED" : "EXCLUDED" },
-  });
-  invoicesUpdated += companyResult.count;
-
-  // 5. Catch remaining invoices by company normalization — handles cases
-  //    like company="Meta for Business" when supplier name is "meta".
-  //    Fetch all uncovered invoices and check via normalizeDomain/company.
-  const remaining = await db.invoice.findMany({
-    where: {
-      organizationId: orgId,
-      reportStatus: isRelevant ? "EXCLUDED" : "INCLUDED",
-      ...(matchingDomains.length > 0
-        ? { senderDomain: { notIn: matchingDomains } }
-        : {}),
-      company: { not: name },
-    },
+  // 2. Cascade to all invoices matching this brand using company-first logic.
+  //    company field takes priority over senderDomain for brand identification,
+  //    so toggling "meta" only affects Meta invoices — not other PayPal vendors.
+  const allInvoices = await db.invoice.findMany({
+    where: { organizationId: orgId },
     select: { id: true, company: true, senderDomain: true },
   });
   const nameLower = name.toLowerCase();
-  const extraIds = remaining
+  const matchingIds = allInvoices
     .filter((inv) => {
       const brand =
         inv.company?.trim().toLowerCase() ||
@@ -97,12 +60,15 @@ export async function PATCH(req: NextRequest) {
       return brand === nameLower;
     })
     .map((inv) => inv.id);
-  if (extraIds.length > 0) {
-    const extra = await db.invoice.updateMany({
-      where: { id: { in: extraIds } },
+
+  let invoicesUpdated = 0;
+  for (let i = 0; i < matchingIds.length; i += 500) {
+    const chunk = matchingIds.slice(i, i + 500);
+    const result = await db.invoice.updateMany({
+      where: { id: { in: chunk } },
       data: { reportStatus: isRelevant ? "INCLUDED" : "EXCLUDED" },
     });
-    invoicesUpdated += extra.count;
+    invoicesUpdated += result.count;
   }
 
   // Invalidate the cached /invoices page so navigation back shows fresh data

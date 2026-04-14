@@ -5,8 +5,8 @@ import { auth } from "@/lib/auth";
 import { createScan, getScans, updateScanStatus, updateScanProgress } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
-import { getDomainsForBrand } from "@/lib/data/suppliers";
 import { db } from "@/lib/db";
+import { normalizeDomain } from "@/lib/utils";
 import { dispatchScan } from "@/lib/worker";
 
 /** Extract clean domain from an email like "Name <user@domain.com>" or "user@domain.com" */
@@ -39,18 +39,39 @@ function extractCompany(sender?: string): string | undefined {
   const domain = extractDomain(sender);
   if (!domain) return undefined;
 
-  // Strip subdomains and TLD to get brand: "billing.hostinger.com" → "hostinger"
-  const parts = domain.split(".");
-  if (parts.length < 2) return undefined;
-  // Take the second-to-last part (brand), capitalize first letter
-  const brand = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+  // Handle compound TLDs: paypal.co.il → paypal, example.com.au → example
+  let base = domain.toLowerCase();
+  const COMPOUND_TLDS = [
+    "co.il", "co.uk", "co.jp", "co.kr", "co.in", "co.za", "co.nz",
+    "com.au", "com.br", "com.mx", "com.ar", "com.tw", "com.sg",
+    "org.uk", "org.il", "net.il", "ac.il", "ac.uk", "gov.il",
+  ];
+  let tldStripped = false;
+  for (const tld of COMPOUND_TLDS) {
+    if (base.endsWith("." + tld)) {
+      base = base.slice(0, -(tld.length + 1));
+      tldStripped = true;
+      break;
+    }
+  }
+  if (!tldStripped) {
+    base = base.replace(/\.[a-z]{2,6}$/, "");
+  }
+
+  // Take the last meaningful part as the brand, skip noise subdomains
+  const NOISE = new Set([
+    "info", "billing", "invoices", "mail", "email", "noreply", "no-reply",
+    "support", "notifications", "accounts", "payments", "service", "www",
+  ]);
+  const parts = base.split(".").filter((p) => p && !NOISE.has(p));
+  const brand = parts.length > 0 ? parts[parts.length - 1] : base;
   if (!brand || brand.length < 2) return undefined;
   return brand.charAt(0).toUpperCase() + brand.slice(1);
 }
 
 /** For PayPal receipts, extract the actual vendor from the subject line.
  *  e.g. "Receipt for Your Payment to Shopify International" → "Shopify"
- *  Also normalizes Meta/Facebook variants to "Meta".
+ *  Works for ALL PayPal vendors, not just hardcoded names.
  */
 function extractVendorFromSubject(subject?: string, sender?: string): string | undefined {
   if (!subject || !sender) return undefined;
@@ -60,9 +81,22 @@ function extractVendorFromSubject(subject?: string, sender?: string): string | u
   // Only apply to PayPal senders
   if (!domainLower.includes("paypal")) return undefined;
 
-  const m = subject.match(/payment\s+to\s+(.+?)(?:\s+international)?$/i);
+  // Match PayPal receipt subject formats:
+  //   "Receipt for Your Payment to [VENDOR]"
+  //   "Receipt for Payment to [VENDOR]"
+  //   "You sent a payment to [VENDOR]"
+  //   "You paid [VENDOR]"
+  const m = subject.match(/(?:payment|paid)\s+to\s+(.+)/i);
   if (!m) return undefined;
-  const vendor = m[1].trim();
+
+  // Clean vendor name: strip trailing "International", "Inc.", "Ltd.", etc.
+  let vendor = m[1]
+    .replace(/\s+international\s*$/i, "")
+    .replace(/,?\s*(?:inc\.?|ltd\.?|llc\.?|gmbh|s\.?a\.?|b\.?v\.?|pvt\.?)\s*$/i, "")
+    .trim();
+  if (!vendor) return undefined;
+
+  // Normalize known brand variants
   const vendorLower = vendor.toLowerCase();
   if (vendorLower.includes("meta") || vendorLower.includes("facebook")) return "Meta";
   if (vendorLower.includes("shopify")) return "Shopify";
@@ -248,32 +282,63 @@ export async function POST(req: NextRequest) {
             console.log(`[Scan ${scan.id}] backfilled bodyHtml for ${filled} existing invoices`);
           }
         }
+
+        // Backfill company for existing invoices that were scanned before
+        // vendor extraction was improved (e.g., PayPal receipts with Meta/Shopify).
+        const companyBackfills = invoiceRows.filter(
+          (r) => r.company && !r.gmailMessageId.startsWith("unknown-")
+        );
+        if (companyBackfills.length > 0) {
+          const companyResult = await db.$transaction(
+            companyBackfills.map((r) =>
+              db.invoice.updateMany({
+                where: {
+                  organizationId: orgId,
+                  gmailMessageId: r.gmailMessageId,
+                  company: { not: r.company },
+                },
+                data: { company: r.company },
+              })
+            )
+          );
+          const filled = companyResult.reduce((sum, r) => sum + r.count, 0);
+          if (filled > 0) {
+            console.log(`[Scan ${scan.id}] backfilled company for ${filled} existing invoices`);
+          }
+        }
       }
 
       // ── Honour existing supplier exclusions ───────────────────────
       // If the user previously unchecked a supplier, re-exclude its invoices
       // so a re-scan doesn't silently re-include them.
+      // Uses company-first brand logic to avoid over-excluding shared domains
+      // (e.g., paypal.co.il serves Meta, Shopify, and generic PayPal invoices).
       const excludedSuppliers = await db.supplier.findMany({
         where: { organizationId: orgId, isRelevant: false },
         select: { name: true },
       });
-      for (const { name } of excludedSuppliers) {
-        const domains = await getDomainsForBrand(orgId, name);
-        if (domains.length > 0) {
+      if (excludedSuppliers.length > 0) {
+        const excludedBrands = new Set(
+          excludedSuppliers.map((s) => s.name.toLowerCase())
+        );
+        const scanInvs = await db.invoice.findMany({
+          where: { organizationId: orgId, scanId: scan.id },
+          select: { id: true, company: true, senderDomain: true },
+        });
+        const idsToExclude = scanInvs
+          .filter((inv) => {
+            const brand =
+              inv.company?.trim().toLowerCase() ||
+              (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
+            return brand != null && excludedBrands.has(brand);
+          })
+          .map((inv) => inv.id);
+        for (let i = 0; i < idsToExclude.length; i += 500) {
           await db.invoice.updateMany({
-            where: { organizationId: orgId, scanId: scan.id, senderDomain: { in: domains } },
+            where: { id: { in: idsToExclude.slice(i, i + 500) } },
             data: { reportStatus: "EXCLUDED" },
           });
         }
-        await db.invoice.updateMany({
-          where: {
-            organizationId: orgId,
-            scanId: scan.id,
-            company: { equals: name, mode: "insensitive" },
-            ...(domains.length > 0 ? { senderDomain: { notIn: domains } } : {}),
-          },
-          data: { reportStatus: "EXCLUDED" },
-        });
       }
 
       await updateScanStatus(orgId, scan.id, {
