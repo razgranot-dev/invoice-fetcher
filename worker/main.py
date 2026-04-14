@@ -464,21 +464,50 @@ async def export_screenshots_zip(req: ExportRequest):
         try:
             zip_buffer = io.BytesIO()
             zipped_count = 0
+            skipped_missing = 0
+            seen_names: set[str] = set()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
                 for inv in succeeded:
                     screenshot_path = inv.get("screenshot_path")
                     if not screenshot_path or not os.path.isfile(screenshot_path):
+                        skipped_missing += 1
+                        inv_id_dbg = inv.get("id", "?")
+                        logger.warning(
+                            "ZIP: screenshot file missing for %s (path=%s, exists=%s)",
+                            inv_id_dbg, screenshot_path, os.path.isfile(screenshot_path) if screenshot_path else False,
+                        )
+                        failed.append({
+                            "id": inv_id_dbg,
+                            "supplier": inv.get("company") or inv.get("sender") or "Unknown",
+                            "sender": inv.get("sender") or "",
+                            "date": str(inv.get("date") or "")[:10],
+                            "subject": (inv.get("subject") or "")[:60],
+                            "reason": "Screenshot file missing from disk",
+                            "html_source": inv.get("screenshot_html_source", "unknown"),
+                        })
                         continue
 
                     sender = (inv.get("sender") or "unknown").split("@")[-1].replace(">", "").split(".")[0]
                     date_str = str(inv.get("date") or "")[:10].replace("/", "-")
-                    inv_id = str(inv.get("id") or "")[:8]
+                    inv_id = str(inv.get("id") or "")
                     for ch in r'<>:"/\|?*':
                         sender = sender.replace(ch, "_")
 
                     zip_name = f"{sender}_{date_str}_{inv_id}.png"
+                    # Deduplicate filenames (shouldn't happen with full ID, but safety net)
+                    if zip_name in seen_names:
+                        counter = 2
+                        base = zip_name[:-4]
+                        while f"{base}_{counter}.png" in seen_names:
+                            counter += 1
+                        zip_name = f"{base}_{counter}.png"
+                    seen_names.add(zip_name)
+
                     zf.write(screenshot_path, zip_name)
                     zipped_count += 1
+
+            if skipped_missing:
+                logger.warning("ZIP: %d files were missing on disk despite successful render", skipped_missing)
 
                 # Include failure diagnostic only when there ARE successful screenshots alongside failures
                 if failed:
