@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Loader2, Camera, CheckCircle2, Images } from "lucide-react";
+import { FileText, Loader2, CheckCircle2, Images } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface ExportWordButtonProps {
@@ -64,11 +64,11 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     };
   }, [exportId, status, router]);
 
-  const handleExport = async (format: "WORD" | "ZIP_SCREENSHOTS", includeScreenshots = false) => {
+  const handleExport = async (format: "WORD" | "ZIP_SCREENSHOTS") => {
     setStatus("starting");
     setProgress(0);
     const labels: Record<string, string> = {
-      WORD: includeScreenshots ? "Starting export with screenshots..." : "Starting export...",
+      WORD: "Starting export...",
       ZIP_SCREENSHOTS: "Starting screenshot package...",
     };
     setMessage(labels[format] ?? "Starting...");
@@ -77,7 +77,7 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
       const res = await fetch("/api/exports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ format, filters, includeScreenshots }),
+        body: JSON.stringify({ format, filters, includeScreenshots: false }),
       });
 
       if (!res.ok) {
@@ -138,16 +138,6 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
       >
         <FileText className="h-3.5 w-3.5" />
         Export Word
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => handleExport("WORD", true)}
-        disabled={disabled}
-        className="border-blue-500/30 text-blue-600 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-blue-950"
-      >
-        <Camera className="h-3.5 w-3.5" />
-        Word + Screenshots
       </Button>
       <Button
         variant="outline"
