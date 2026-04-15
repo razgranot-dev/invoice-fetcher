@@ -10,6 +10,7 @@ import {
   XCircle,
   CheckCircle2,
   Clock,
+  Ban,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,7 @@ const statusConfig: Record<
   PROCESSING: { icon: Loader2, label: "Generating...", variant: "default" },
   COMPLETED: { icon: CheckCircle2, label: "Ready", variant: "secondary" },
   FAILED: { icon: XCircle, label: "Failed", variant: "destructive" },
+  CANCELLED: { icon: Ban, label: "Cancelled", variant: "outline" },
 };
 
 function formatBytes(bytes: number): string {
@@ -60,6 +62,7 @@ function formatBytes(bytes: number): string {
 
 export function ExportList({ initial }: { initial: ExportItem[] }) {
   const [exports, setExports] = useState<ExportItem[]>(initial);
+  const [cancellingIds, setCancellingIds] = useState<Set<string>>(new Set());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const hasActive = exports.some(
@@ -72,6 +75,8 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
       return;
     }
 
+    // Use adaptive polling: 1.5s when exports are actively processing,
+    // but stop entirely when nothing is active (hasActive guard above).
     intervalRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/exports?t=${Date.now()}`, {
@@ -83,7 +88,7 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
       } catch {
         // ignore polling errors
       }
-    }, 1500);
+    }, 2000);
 
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
@@ -95,6 +100,30 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
     setExports(initial);
   }, [initial]);
 
+  const handleCancel = async (exportId: string) => {
+    setCancellingIds((prev) => new Set(prev).add(exportId));
+    try {
+      const res = await fetch(`/api/exports/${exportId}`, { method: "DELETE" });
+      if (res.ok) {
+        setExports((prev) =>
+          prev.map((e) =>
+            e.id === exportId
+              ? { ...e, status: "CANCELLED", progress: 100, progressMessage: "Cancelled" }
+              : e
+          )
+        );
+      }
+    } catch {
+      // ignore
+    } finally {
+      setCancellingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(exportId);
+        return next;
+      });
+    }
+  };
+
   return (
     <div className="rounded-xl border border-border bg-card divide-y divide-border">
       {exports.map((exp) => {
@@ -103,6 +132,7 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
         const status = statusConfig[exp.status] ?? statusConfig.PENDING;
         const StatusIcon = status.icon;
         const pct = exp.progress ?? 0;
+        const isCancellable = exp.status === "PENDING" || exp.status === "PROCESSING";
 
         return (
           <div
@@ -129,7 +159,7 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
                 </p>
 
                 {/* Live progress bar for active exports */}
-                {(exp.status === "PROCESSING" || exp.status === "PENDING") && (
+                {isCancellable && (
                   <div className="flex items-center gap-2 mt-1.5">
                     <div className="h-1.5 flex-1 max-w-[220px] rounded-full bg-muted overflow-hidden">
                       <div
@@ -144,12 +174,11 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
                 )}
 
                 {/* Progress message for active exports */}
-                {(exp.status === "PROCESSING" || exp.status === "PENDING") &&
-                  exp.progressMessage && (
-                    <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-sm">
-                      {exp.progressMessage}
-                    </p>
-                  )}
+                {isCancellable && exp.progressMessage && (
+                  <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-sm">
+                    {exp.progressMessage}
+                  </p>
+                )}
 
                 {/* Completion message with warnings */}
                 {exp.status === "COMPLETED" &&
@@ -176,6 +205,18 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
                     <Download className="h-3.5 w-3.5" />
                     Download
                   </a>
+                </Button>
+              )}
+              {isCancellable && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleCancel(exp.id)}
+                  disabled={cancellingIds.has(exp.id)}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  <XCircle className="h-3.5 w-3.5" />
+                  {cancellingIds.has(exp.id) ? "Cancelling..." : "Cancel"}
                 </Button>
               )}
               <Badge variant={status.variant}>

@@ -15,13 +15,15 @@ export async function GET() {
   // that can be independently unavailable without making the web app "unhealthy"
   const healthy = dbCheck.ok;
 
+  // Only expose status booleans publicly — error details are logged server-side
+  if (dbCheck.error) console.error("[health] DB error:", dbCheck.error);
+  if (workerCheck.error) console.error("[health] Worker error:", workerCheck.error);
+
   return NextResponse.json(
     {
       status: healthy ? (workerCheck.ok ? "ok" : "degraded") : "unhealthy",
       db: dbCheck.ok ? "connected" : "disconnected",
       worker: workerCheck.ok ? "connected" : "unavailable",
-      ...(dbCheck.error && { dbError: dbCheck.error }),
-      ...(workerCheck.error && { workerError: workerCheck.error }),
     },
     { status: healthy ? 200 : 503 }
   );

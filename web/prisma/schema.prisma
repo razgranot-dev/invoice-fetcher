@@ -210,6 +210,8 @@ model Invoice {
   @@index([organizationId, company])
   @@index([organizationId, date])
   @@index([organizationId, reportStatus])
+  @@index([organizationId, senderDomain])
+  @@index([organizationId, createdAt])
   @@index([scanId])
   @@map("invoices")
 }
@@ -264,4 +266,5 @@ enum ExportStatus {
   PROCESSING
   COMPLETED
   FAILED
+  CANCELLED
 }

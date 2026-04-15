@@ -35,9 +35,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No organization" }, { status: 403 });
   }
 
-  const body = await req.json();
-  const format = body.format as "WORD" | "ZIP_SCREENSHOTS";
-  const filters = body.filters ?? {};
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const format = body.format as string;
+  const filters = (body.filters && typeof body.filters === "object") ? body.filters : {};
   const includeScreenshots = body.includeScreenshots === true;
 
   if (format !== "WORD" && format !== "ZIP_SCREENSHOTS") {
@@ -106,6 +112,10 @@ export async function POST(req: NextRequest) {
   // Process async — response returns immediately
   after(async () => {
     try {
+      // Check if already cancelled before starting
+      const preCheck = await db.export.findUnique({ where: { id: exp.id }, select: { status: true } });
+      if (preCheck?.status === "CANCELLED") return;
+
       await updateExportStatus(orgId, exp.id, { status: "PROCESSING" });
 
       const progressCb = async (progress: number, message: string) => {
@@ -146,11 +156,16 @@ export async function POST(req: NextRequest) {
         completionMessage = `${result.failures.length} screenshot(s) failed: ${parts.join("; ")}`;
       }
 
+      // Atomically mark complete ONLY if not cancelled — no TOCTOU gap.
+      // Progress update is safe (cosmetic), but the status transition must be guarded.
       await updateExportProgress(orgId, exp.id, 100, completionMessage);
-      await updateExportStatus(orgId, exp.id, {
-        status: "COMPLETED",
-        fileSize: result.fileSize,
-        completedAt: new Date(),
+      await db.export.updateMany({
+        where: { id: exp.id, organizationId: orgId, status: { not: "CANCELLED" } },
+        data: {
+          status: "COMPLETED",
+          fileSize: result.fileSize,
+          completedAt: new Date(),
+        },
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Export generation failed";

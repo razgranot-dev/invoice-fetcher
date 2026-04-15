@@ -7,23 +7,44 @@ import { normalizeDomain } from "@/lib/utils";
  * This ensures PayPal receipts with company="Meta" are grouped under "meta",
  * not under the shared "paypal" domain brand.
  * Returns all suppliers with accurate invoice counts.
+ *
+ * Performance: Uses two GROUP BY queries instead of fetching all invoices.
+ * - groupBy(company) for invoices with a company field
+ * - groupBy(senderDomain) for invoices without a company field
+ * This reduces data transfer from O(n) rows to O(unique_brands) rows.
  */
 export async function getSuppliers(organizationId: string) {
-  // Get minimal invoice data for brand computation
-  const invoices = await db.invoice.findMany({
-    where: { organizationId },
-    select: { senderDomain: true, company: true },
-  });
+  // GROUP BY company for invoices that have a company name set.
+  // This avoids fetching all invoice rows — the DB aggregates for us.
+  const [companyGroups, domainGroups] = await Promise.all([
+    db.invoice.groupBy({
+      by: ["company"],
+      where: { organizationId, company: { not: null } },
+      _count: true,
+    }),
+    // GROUP BY senderDomain for invoices WITHOUT a company name.
+    // These fall back to domain-based brand logic.
+    db.invoice.groupBy({
+      by: ["senderDomain"],
+      where: { organizationId, company: null, senderDomain: { not: null } },
+      _count: true,
+    }),
+  ]);
 
-  // Compute brand counts using company-first logic
-  // (same logic as the invoices page and export routes)
+  // Compute brand counts from the two aggregated result sets
   const brandCounts = new Map<string, number>();
-  for (const inv of invoices) {
-    const brand =
-      inv.company?.trim().toLowerCase() ||
-      (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
+
+  for (const row of companyGroups) {
+    const brand = row.company?.trim().toLowerCase();
     if (!brand) continue;
-    brandCounts.set(brand, (brandCounts.get(brand) ?? 0) + 1);
+    brandCounts.set(brand, (brandCounts.get(brand) ?? 0) + row._count);
+  }
+
+  for (const row of domainGroups) {
+    if (!row.senderDomain) continue;
+    const brand = normalizeDomain(row.senderDomain);
+    if (!brand) continue;
+    brandCounts.set(brand, (brandCounts.get(brand) ?? 0) + row._count);
   }
 
   // Create supplier records for all discovered brands (idempotent)
@@ -43,18 +64,25 @@ export async function getSuppliers(organizationId: string) {
       where: { organizationId },
     });
     const stale = existingSuppliers.filter((s) => !validNames.has(s.name));
-    for (const s of stale) {
-      const lower = s.name.toLowerCase();
-      if (lower !== s.name && validNames.has(lower)) {
-        await db.supplier
-          .update({
-            where: { organizationId_name: { organizationId, name: lower } },
+
+    // Batch migrate isRelevant in a single transaction instead of N individual updates
+    if (stale.length > 0) {
+      const migrations = stale
+        .filter((s) => {
+          const lower = s.name.toLowerCase();
+          return lower !== s.name && validNames.has(lower);
+        })
+        .map((s) =>
+          db.supplier.updateMany({
+            where: { organizationId, name: s.name.toLowerCase() },
             data: { isRelevant: s.isRelevant },
           })
-          .catch(() => {});
+        );
+
+      if (migrations.length > 0) {
+        await db.$transaction(migrations);
       }
-    }
-    if (stale.length > 0) {
+
       await db.supplier.deleteMany({
         where: { id: { in: stale.map((s) => s.id) } },
       });
@@ -76,6 +104,9 @@ export async function getSuppliers(organizationId: string) {
  * Find all raw senderDomain values that DIRECTLY normalize to a given brand name.
  * Does NOT fall back to company-based domain lookup — those domains may be shared
  * by multiple vendors (e.g., paypal.co.il serves Meta, Shopify, etc.).
+ *
+ * Performance: Only queries invoices with company=null since invoices with a
+ * company field use company-based brand logic (not domain-based).
  */
 export async function getDomainsForBrand(
   organizationId: string,
@@ -83,7 +114,7 @@ export async function getDomainsForBrand(
 ): Promise<string[]> {
   const domains = await db.invoice.groupBy({
     by: ["senderDomain"],
-    where: { organizationId, senderDomain: { not: null } },
+    where: { organizationId, company: null, senderDomain: { not: null } },
   });
 
   return domains

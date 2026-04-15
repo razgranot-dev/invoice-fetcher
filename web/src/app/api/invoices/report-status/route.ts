@@ -13,16 +13,24 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "No organization" }, { status: 403 });
   }
 
-  const body = await req.json();
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
   const { ids, reportStatus } = body;
 
   if (
     !Array.isArray(ids) ||
     ids.length === 0 ||
+    ids.length > 10000 ||
+    !ids.every((id: unknown) => typeof id === "string" && id.length > 0 && id.length <= 100) ||
     (reportStatus !== "INCLUDED" && reportStatus !== "EXCLUDED")
   ) {
     return NextResponse.json(
-      { error: "ids (string[]) and reportStatus (INCLUDED|EXCLUDED) required" },
+      { error: "ids (string[], max 10000) and reportStatus (INCLUDED|EXCLUDED) required" },
       { status: 400 }
     );
   }

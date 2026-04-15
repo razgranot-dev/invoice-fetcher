@@ -33,84 +33,6 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
   );
   const isActive = activeExports.length > 0;
 
-  // Poll for progress on the currently processing export
-  useEffect(() => {
-    const polling = activeExports.find(
-      (e) => e.exportId && (e.status === "processing" || e.status === "starting")
-    );
-    if (!polling?.exportId) return;
-
-    intervalRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/exports/${polling.exportId}?t=${Date.now()}`, {
-          cache: "no-store",
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        const exp = data.export;
-        if (!exp) return;
-
-        setActiveExports((prev) =>
-          prev.map((e) => {
-            if (e.exportId !== polling.exportId) return e;
-            const updated = { ...e, progress: exp.progress ?? e.progress };
-            if (exp.progressMessage) updated.message = exp.progressMessage;
-
-            if (exp.status === "COMPLETED") {
-              updated.status = "done";
-              updated.progress = 100;
-              const serverMsg = exp.progressMessage ?? "";
-              updated.message = serverMsg !== "Complete" && serverMsg ? serverMsg : "Export ready!";
-            } else if (exp.status === "FAILED") {
-              updated.status = "failed";
-              updated.message = exp.errorMessage ?? "Export failed";
-            }
-            return updated;
-          })
-        );
-
-        if (exp.status === "COMPLETED" || exp.status === "FAILED") {
-          if (intervalRef.current) clearInterval(intervalRef.current);
-        }
-      } catch {
-        // Ignore polling errors
-      }
-    }, 800);
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [activeExports]);
-
-  // Process queue: when current export finishes, start the next one
-  useEffect(() => {
-    const allDone = activeExports.length > 0 && activeExports.every(
-      (e) => e.status === "done" || e.status === "failed"
-    );
-
-    // Check if we should start the next queued item
-    const hasRunning = activeExports.some(
-      (e) => e.status === "starting" || e.status === "processing"
-    );
-
-    if (!hasRunning && queueRef.current.length > 0 && !runningRef.current) {
-      const next = queueRef.current.shift()!;
-      startExport(next);
-    }
-
-    // All exports finished — redirect after delay
-    if (allDone) {
-      const hasFailure = activeExports.some((e) => e.status === "failed");
-      const delay = hasFailure ? 4000 : 1200;
-      const timer = setTimeout(() => {
-        setActiveExports([]);
-        setChecked(new Set());
-        router.push("/exports");
-      }, delay);
-      return () => clearTimeout(timer);
-    }
-  }, [activeExports, router]);
-
   const startExport = useCallback(async (format: ExportFormat) => {
     runningRef.current = true;
     const label = format === "WORD" ? "Starting Word export..." : "Starting screenshot package...";
@@ -159,6 +81,97 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     }
     runningRef.current = false;
   }, [filters]);
+
+  // Poll for progress on the currently processing export
+  useEffect(() => {
+    const polling = activeExports.find(
+      (e) => e.exportId && (e.status === "processing" || e.status === "starting")
+    );
+    if (!polling?.exportId) return;
+
+    intervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/exports/${polling.exportId}?t=${Date.now()}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const exp = data.export;
+        if (!exp) return;
+
+        setActiveExports((prev) =>
+          prev.map((e) => {
+            if (e.exportId !== polling.exportId) return e;
+            const updated = { ...e, progress: exp.progress ?? e.progress };
+            if (exp.progressMessage) updated.message = exp.progressMessage;
+
+            if (exp.status === "COMPLETED") {
+              updated.status = "done";
+              updated.progress = 100;
+              const serverMsg = exp.progressMessage ?? "";
+              updated.message = serverMsg !== "Complete" && serverMsg ? serverMsg : "Export ready!";
+            } else if (exp.status === "FAILED") {
+              updated.status = "failed";
+              updated.message = exp.errorMessage ?? "Export failed";
+            } else if (exp.status === "CANCELLED") {
+              updated.status = "failed";
+              updated.message = "Export was cancelled";
+            }
+            return updated;
+          })
+        );
+
+        if (exp.status === "COMPLETED" || exp.status === "FAILED" || exp.status === "CANCELLED") {
+          if (intervalRef.current) clearInterval(intervalRef.current);
+        }
+      } catch {
+        // Ignore polling errors
+      }
+    }, 800);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [activeExports]);
+
+  // Process queue: when current export finishes, start the next one
+  useEffect(() => {
+    const allDone = activeExports.length > 0 && activeExports.every(
+      (e) => e.status === "done" || e.status === "failed"
+    );
+
+    // Check if we should start the next queued item
+    const hasRunning = activeExports.some(
+      (e) => e.status === "starting" || e.status === "processing"
+    );
+
+    if (!hasRunning && queueRef.current.length > 0 && !runningRef.current) {
+      const next = queueRef.current.shift()!;
+      startExport(next);
+    }
+
+    // All exports finished — redirect after delay.
+    // Guard: only navigate if activeExports is still populated when the timer fires,
+    // preventing a race where the user clicks a new export during the delay.
+    if (allDone) {
+      const hasFailure = activeExports.some((e) => e.status === "failed");
+      const delay = hasFailure ? 4000 : 1200;
+      const timer = setTimeout(() => {
+        setActiveExports((current) => {
+          // Re-check: if new exports were started during the delay, bail out
+          const stillDone = current.length > 0 && current.every(
+            (e) => e.status === "done" || e.status === "failed"
+          );
+          if (!stillDone) return current;
+          // Safe to navigate — all exports are still finished
+          setChecked(new Set());
+          router.push("/exports");
+          return [];
+        });
+      }, delay);
+      return () => clearTimeout(timer);
+    }
+  }, [activeExports, router, startExport]);
 
   const handleSingleExport = (format: ExportFormat) => {
     queueRef.current = [];

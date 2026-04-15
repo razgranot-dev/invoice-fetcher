@@ -59,9 +59,14 @@ function extractCompany(sender?: string): string | undefined {
   }
 
   // Take the last meaningful part as the brand, skip noise subdomains
+  // Must match NOISE_SUBDOMAINS in utils.ts to avoid brand divergence
   const NOISE = new Set([
-    "info", "billing", "invoices", "mail", "email", "noreply", "no-reply",
-    "support", "notifications", "accounts", "payments", "service", "www",
+    "info", "billing", "invoices", "invoice", "mail", "email", "e-mail",
+    "noreply", "no-reply", "donotreply", "support", "help", "contact",
+    "notifications", "notification", "notify", "alerts", "alert",
+    "accounts", "account", "payments", "payment", "orders", "order",
+    "receipts", "receipt", "service", "services", "mailer", "news",
+    "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
   ]);
   const parts = base.split(".").filter((p) => p && !NOISE.has(p));
   const brand = parts.length > 0 ? parts[parts.length - 1] : base;
@@ -86,7 +91,7 @@ function extractVendorFromSubject(subject?: string, sender?: string): string | u
   //   "Receipt for Payment to [VENDOR]"
   //   "You sent a payment to [VENDOR]"
   //   "You paid [VENDOR]"
-  const m = subject.match(/(?:payment|paid)\s+to\s+(.+)/i);
+  const m = subject.match(/(?:payment\s+to|paid\s+to|you\s+paid)\s+(.+)/i);
   if (!m) return undefined;
 
   // Clean vendor name: strip trailing "International", "Inc.", "Ltd.", etc.
@@ -107,6 +112,7 @@ function extractVendorFromSubject(subject?: string, sender?: string): string | u
 function normalizeCompanyName(name: string): string {
   const lower = name.toLowerCase();
   if (lower.includes("facebookmail") || lower === "facebook" ||
+      lower === "instagram" ||
       lower.includes("meta for business") || lower.includes("meta platforms")) {
     return "Meta";
   }
@@ -148,10 +154,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const body = await req.json();
-  const keywords = body.keywords ?? [];
-  const daysBack = body.daysBack ?? 30;
-  const unreadOnly = body.unreadOnly ?? true;
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const keywords = Array.isArray(body.keywords) ? body.keywords.filter((k: unknown) => typeof k === "string").slice(0, 20) : [];
+  const daysBack = typeof body.daysBack === "number" && Number.isInteger(body.daysBack) && body.daysBack >= 1 && body.daysBack <= 365
+    ? body.daysBack
+    : 30;
+  const unreadOnly = typeof body.unreadOnly === "boolean" ? body.unreadOnly : true;
 
   const scan = await createScan(orgId, connection.id, {
     keywords,
@@ -168,6 +182,10 @@ export async function POST(req: NextRequest) {
   // Run the heavy dispatch in the background so the POST returns immediately
   after(async () => {
     try {
+      // Check if scan was cancelled before processing even starts
+      const preCheck = await db.scan.findUnique({ where: { id: scan.id }, select: { status: true } });
+      if (preCheck?.status === "CANCELLED") return;
+
       const result = await dispatchScan(
         scan.id,
         {
@@ -191,6 +209,10 @@ export async function POST(req: NextRequest) {
         });
         return;
       }
+
+      // Check if scan was cancelled while worker was running
+      const midCheck = await db.scan.findUnique({ where: { id: scan.id }, select: { status: true } });
+      if (midCheck?.status === "CANCELLED") return;
 
       // ── Scan-time quality filter ────────────────────────────────────
 
@@ -341,14 +363,19 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      await updateScanStatus(orgId, scan.id, {
-        status: "COMPLETED",
-        totalMessages: result.total_messages,
-        processedCount: result.invoices.length,
-        invoiceCount: persistable.length,
-        progress: 100,
-        progressMessage: `Complete — ${persistable.length} saved from ${result.total_messages} emails`,
-        completedAt: new Date(),
+      // Atomically mark complete ONLY if not cancelled — no TOCTOU gap.
+      // Uses updateMany with a status guard instead of read-then-write.
+      await db.scan.updateMany({
+        where: { id: scan.id, organizationId: orgId, status: { not: "CANCELLED" } },
+        data: {
+          status: "COMPLETED",
+          totalMessages: result.total_messages,
+          processedCount: result.invoices.length,
+          invoiceCount: persistable.length,
+          progress: 100,
+          progressMessage: `Complete — ${persistable.length} saved from ${result.total_messages} emails`,
+          completedAt: new Date(),
+        },
       });
 
       // Invalidate cached invoices page so new scan appears in dropdown

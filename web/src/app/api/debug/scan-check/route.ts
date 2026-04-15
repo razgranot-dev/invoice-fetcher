@@ -1,17 +1,25 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 
 /**
- * Diagnostic endpoint — no auth. Delete after debugging.
+ * Diagnostic endpoint — restricted to org owners.
  * GET /api/debug/scan-check
  */
 export async function GET() {
-  // Grab the first org (single-tenant for now)
-  const org = await db.organization.findFirst();
-  if (!org) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const role = (session as any).role;
+  if (role !== "OWNER") {
+    return NextResponse.json({ error: "Admin only" }, { status: 403 });
+  }
+  // Use the caller's own organization — never query arbitrary orgs
+  const orgId = (session as any).organizationId as string | undefined;
+  if (!orgId) {
     return NextResponse.json({ error: "No organization found" }, { status: 404 });
   }
-  const orgId = org.id;
 
   // 1. All scans with _count
   const scans = await db.scan.findMany({

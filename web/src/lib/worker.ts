@@ -256,11 +256,29 @@ async function readNdjsonStream(
 function normalizeCompany(name: string): string {
   const lower = name.toLowerCase();
   if (lower.includes("facebookmail") || lower === "facebook" ||
+      lower === "instagram" ||
       lower.includes("meta for business") || lower.includes("meta platforms")) {
     return "Meta";
   }
   return name;
 }
+
+/** Compound TLDs that should be stripped as a unit */
+const COMPOUND_TLDS = [
+  "co.il", "co.uk", "co.jp", "co.kr", "co.in", "co.za", "co.nz",
+  "com.au", "com.br", "com.mx", "com.ar", "com.tw", "com.sg",
+  "org.uk", "org.il", "net.il", "ac.il", "ac.uk", "gov.il",
+];
+
+/** Noise subdomains to skip when extracting brand from domain */
+const NOISE_SUBS = new Set([
+  "info", "billing", "invoices", "invoice", "mail", "email", "e-mail",
+  "noreply", "no-reply", "donotreply", "support", "help", "contact",
+  "notifications", "notification", "notify", "alerts", "alert",
+  "accounts", "account", "payments", "payment", "orders", "order",
+  "receipts", "receipt", "service", "services", "mailer", "news",
+  "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
+]);
 
 /** Extract a display-friendly company name from sender for export fallback */
 function companyFromSender(sender: unknown): string {
@@ -271,11 +289,23 @@ function companyFromSender(sender: unknown): string {
     const name = m[1].replace(/^["']|["']$/g, "").trim();
     if (name && !name.includes("@") && name.length > 1) return normalizeCompany(name);
   }
-  // Fall back to domain brand
+  // Fall back to domain brand — properly handle compound TLDs
   const dm = sender.match(/@([^>]+)/);
   if (dm) {
-    const parts = dm[1].split(".");
-    const brand = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+    let base = dm[1].toLowerCase().replace(/[^a-z0-9.-]/g, "");
+    let tldStripped = false;
+    for (const tld of COMPOUND_TLDS) {
+      if (base.endsWith("." + tld)) {
+        base = base.slice(0, -(tld.length + 1));
+        tldStripped = true;
+        break;
+      }
+    }
+    if (!tldStripped) {
+      base = base.replace(/\.[a-z]{2,6}$/, "");
+    }
+    const parts = base.split(".").filter((p) => p && !NOISE_SUBS.has(p));
+    const brand = parts.length > 0 ? parts[parts.length - 1] : base;
     if (brand && brand.length >= 2) {
       const capitalized = brand.charAt(0).toUpperCase() + brand.slice(1);
       return normalizeCompany(capitalized);

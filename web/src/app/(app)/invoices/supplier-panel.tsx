@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Check, Building2 } from "lucide-react";
 import { cleanDomainName } from "@/lib/utils";
@@ -21,6 +21,12 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
   const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
   const [suppliers, setSuppliers] = useState(initial);
+
+  // Sync suppliers state when the `initial` prop changes
+  // (e.g. after router.refresh() re-fetches server data)
+  useEffect(() => {
+    setSuppliers(initial);
+  }, [initial]);
 
   const reportFilter = searchParams.get("report") ?? "";
 

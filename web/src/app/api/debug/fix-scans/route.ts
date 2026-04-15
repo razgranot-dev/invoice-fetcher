@@ -1,16 +1,31 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 
 /**
  * One-time fix: re-associate ALL invoices to scans based on createdAt timestamps.
- * No auth — temporary endpoint, delete after use.
+ * Restricted to authenticated org owners only.
  *
  * POST /api/debug/fix-scans
  */
 export async function POST() {
-  // Fix ALL organizations at once
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const role = (session as any).role;
+  if (role !== "OWNER") {
+    return NextResponse.json({ error: "Admin only" }, { status: 403 });
+  }
+
+  const orgId = (session as any).organizationId as string | undefined;
+  if (!orgId) {
+    return NextResponse.json({ error: "No organization" }, { status: 403 });
+  }
+
+  // Only fix scans belonging to the caller's organization
   const scans = await db.scan.findMany({
-    where: { status: "COMPLETED" },
+    where: { organizationId: orgId, status: "COMPLETED" },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,

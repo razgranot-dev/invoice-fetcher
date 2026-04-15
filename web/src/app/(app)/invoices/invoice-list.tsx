@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { FileText, Check, Minus, FileCheck, FileX } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -55,6 +55,12 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
   const [statuses, setStatuses] = useState<Record<string, string>>(() =>
     Object.fromEntries(invoices.map((inv) => [inv.id, inv.reportStatus]))
   );
+
+  // Sync statuses when invoices prop changes (e.g. after router.refresh())
+  useEffect(() => {
+    setStatuses(Object.fromEntries(invoices.map((inv) => [inv.id, inv.reportStatus])));
+    setSelected(new Set());
+  }, [invoices]);
 
   const allIds = invoices.map((i) => i.id);
   const allSelected = invoices.length > 0 && selected.size === invoices.length;

@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2 } from "lucide-react";
+import { Loader2, XCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface ScanProgressProps {
   scanId: string;
@@ -23,6 +24,7 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
     progress: 0,
     progressMessage: "Starting...",
   });
+  const [cancelling, setCancelling] = useState(false);
 
   const poll = useCallback(async () => {
     try {
@@ -46,7 +48,11 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
       const result = await poll();
       if (!mounted) return;
 
-      if (result?.status === "COMPLETED" || result?.status === "FAILED") {
+      if (
+        result?.status === "COMPLETED" ||
+        result?.status === "FAILED" ||
+        result?.status === "CANCELLED"
+      ) {
         router.refresh();
         return;
       }
@@ -61,8 +67,31 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
     };
   }, [poll, router]);
 
+  const handleCancel = async () => {
+    setCancelling(true);
+    try {
+      const res = await fetch(`/api/scans/${scanId}`, { method: "DELETE" });
+      if (res.ok) {
+        setData((prev) => ({
+          ...prev,
+          status: "CANCELLED",
+          progress: 100,
+          progressMessage: "Cancelled",
+        }));
+        router.refresh();
+      }
+    } catch {
+      // ignore
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   const pct = data.progress;
-  const isDone = data.status === "COMPLETED" || data.status === "FAILED";
+  const isDone =
+    data.status === "COMPLETED" ||
+    data.status === "FAILED" ||
+    data.status === "CANCELLED";
 
   if (isDone) return null;
 
@@ -76,6 +105,18 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
           />
         </div>
         <span className="text-muted-foreground tabular-nums">{pct}%</span>
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleCancel();
+          }}
+          disabled={cancelling}
+          className="text-muted-foreground/50 hover:text-destructive transition-colors"
+          title="Cancel scan"
+        >
+          <XCircle className="h-3.5 w-3.5" />
+        </button>
       </div>
     );
   }
@@ -85,7 +126,9 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
       <div className="flex items-center gap-3">
         <Loader2 className="h-4 w-4 animate-spin text-primary" />
         <span className="text-sm font-medium">Scanning inbox...</span>
-        <span className="text-sm tabular-nums text-muted-foreground ml-auto">{pct}%</span>
+        <span className="text-sm tabular-nums text-muted-foreground ml-auto">
+          {pct}%
+        </span>
       </div>
       <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
         <div
@@ -93,9 +136,21 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
           style={{ width: `${pct}%` }}
         />
       </div>
-      {data.progressMessage && (
-        <p className="text-xs text-muted-foreground">{data.progressMessage}</p>
-      )}
+      <div className="flex items-center justify-between">
+        {data.progressMessage && (
+          <p className="text-xs text-muted-foreground">{data.progressMessage}</p>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleCancel}
+          disabled={cancelling}
+          className="text-muted-foreground hover:text-destructive ml-auto"
+        >
+          <XCircle className="h-3.5 w-3.5" />
+          {cancelling ? "Cancelling..." : "Cancel"}
+        </Button>
+      </div>
     </div>
   );
 }

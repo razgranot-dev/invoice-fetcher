@@ -4,11 +4,13 @@ import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { requireOrganization } from "@/lib/session";
-import { getExports } from "@/lib/data/exports";
+import { getExports, recoverStuckExports } from "@/lib/data/exports";
 import { ExportList } from "./export-list";
 
 export default async function ExportsPage() {
   const { organizationId } = await requireOrganization();
+  // Recover any exports stuck in PROCESSING for 15+ minutes before loading
+  await recoverStuckExports(organizationId);
   const exports = await getExports(organizationId);
 
   return (

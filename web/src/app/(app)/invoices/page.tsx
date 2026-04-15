@@ -48,9 +48,10 @@ export default async function InvoicesPage({
 
   const invoiceBrandCounts = new Map<string, { displayName: string; count: number }>();
   for (const inv of allInvoices) {
-    const brand = inv.senderDomain
-      ? normalizeDomain(inv.senderDomain)
-      : inv.company?.trim().toLowerCase();
+    // Prefer company name for grouping — it's the actual vendor.
+    // Handles PayPal receipts correctly (vendor = Shopify, not PayPal).
+    const brand = inv.company?.trim().toLowerCase()
+      || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     if (!brand) continue;
     const entry = invoiceBrandCounts.get(brand);
     if (entry) {
@@ -89,13 +90,10 @@ export default async function InvoicesPage({
   const visibleInvoices =
     excludedBrands.size > 0
       ? allInvoices.filter((inv) => {
-          const brand = inv.senderDomain
-            ? normalizeDomain(inv.senderDomain)
-            : null;
-          const companyLower = inv.company?.trim().toLowerCase();
+          // Must match the same brand logic as the grouping above
+          const brand = inv.company?.trim().toLowerCase()
+            || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
           if (brand && excludedBrands.has(brand)) return false;
-          if (!brand && companyLower && excludedBrands.has(companyLower))
-            return false;
           return true;
         })
       : allInvoices;

@@ -12,7 +12,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { requireOrganization } from "@/lib/session";
-import { getScans } from "@/lib/data/scans";
+import { getScans, recoverStuckScans } from "@/lib/data/scans";
 import { getConnections } from "@/lib/data/connections";
 import { NewScanButton } from "./new-scan-button";
 import { LocalTime } from "@/components/shared/local-time";
@@ -32,6 +32,8 @@ const statusConfig = {
 
 export default async function ScansPage() {
   const { organizationId } = await requireOrganization();
+  // Recover any scans stuck in RUNNING for 15+ minutes before loading
+  await recoverStuckScans(organizationId);
   const [scans, connections] = await Promise.all([
     getScans(organizationId),
     getConnections(organizationId),

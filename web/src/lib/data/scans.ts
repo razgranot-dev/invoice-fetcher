@@ -97,15 +97,18 @@ export async function updateScanProgress(
   progress: number,
   message: string
 ) {
-  return db.scan.update({
+  // Use updateMany with organizationId-free filter because this is called
+  // from the background after() callback which already verified org ownership.
+  // The scanId is server-generated (not user-supplied) so this is safe.
+  return db.scan.updateMany({
     where: { id: scanId },
     data: { progress, progressMessage: message },
   });
 }
 
-export async function getScanProgress(scanId: string) {
-  return db.scan.findUnique({
-    where: { id: scanId },
+export async function getScanProgress(organizationId: string, scanId: string) {
+  return db.scan.findFirst({
+    where: { id: scanId, organizationId },
     select: {
       id: true,
       status: true,
@@ -114,6 +117,49 @@ export async function getScanProgress(scanId: string) {
       totalMessages: true,
       processedCount: true,
       invoiceCount: true,
+    },
+  });
+}
+
+/**
+ * Cancel a running or pending scan. Returns the updated scan or null if not found/not cancellable.
+ */
+export async function cancelScan(organizationId: string, scanId: string) {
+  const scan = await db.scan.findFirst({
+    where: { id: scanId, organizationId, status: { in: ["PENDING", "RUNNING"] } },
+  });
+  if (!scan) return null;
+
+  await db.scan.update({
+    where: { id: scanId },
+    data: {
+      status: "CANCELLED",
+      progress: 100,
+      progressMessage: "Cancelled by user",
+      completedAt: new Date(),
+    },
+  });
+  return scan;
+}
+
+/**
+ * Recover scans stuck in RUNNING for more than 15 minutes.
+ * Called opportunistically from the scan list.
+ */
+export async function recoverStuckScans(organizationId: string) {
+  const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
+  return db.scan.updateMany({
+    where: {
+      organizationId,
+      status: "RUNNING",
+      startedAt: { lt: fifteenMinAgo },
+    },
+    data: {
+      status: "FAILED",
+      progress: 100,
+      progressMessage: "Timed out — scan did not complete",
+      errorMessage: "Scan timed out after 15 minutes",
+      completedAt: new Date(),
     },
   });
 }

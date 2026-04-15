@@ -11,8 +11,13 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const orgId = (session as any).organizationId;
+  if (!orgId) {
+    return NextResponse.json({ error: "No organization" }, { status: 403 });
+  }
+
   const { id } = await params;
-  const scan = await getScanProgress(id);
+  const scan = await getScanProgress(orgId, id);
 
   if (!scan) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
