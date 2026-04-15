@@ -97,9 +97,9 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
   if (compact) {
     return (
       <div className="flex items-center gap-2.5 text-xs">
-        <div className="w-24 h-2 rounded-full bg-muted/60 overflow-hidden">
+        <div className="w-28 h-2.5 rounded-full bg-muted/50 overflow-hidden border border-border/30">
           <div
-            className="h-full rounded-full progress-bar transition-all duration-700 ease-out"
+            className="h-full rounded-full progress-gradient transition-all duration-700 ease-out"
             style={{ width: `${pct}%` }}
           />
         </div>
@@ -121,22 +121,20 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
   }
 
   return (
-    <div className="space-y-4 p-5 rounded-2xl border border-primary/15 bg-primary/5">
+    <div className="space-y-4 p-6 rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/8 to-primary/3 backdrop-blur-sm shadow-lg shadow-primary/5">
       <div className="flex items-center gap-3">
         <div className="relative">
-          <Loader2 className="h-5 w-5 animate-spin text-primary" />
-          <div className="absolute inset-0 animate-ping opacity-20">
-            <Loader2 className="h-5 w-5 text-primary" />
-          </div>
+          <div className="absolute -inset-2 rounded-full bg-primary/10 blur-md animate-glow-pulse" />
+          <Loader2 className="h-6 w-6 animate-spin text-primary relative" />
         </div>
-        <span className="text-sm font-semibold">Scanning inbox...</span>
-        <span className="text-sm tabular-nums font-bold text-primary ml-auto">
+        <span className="text-sm font-bold">Scanning inbox...</span>
+        <span className="text-base tabular-nums font-black text-primary ml-auto">
           {pct}%
         </span>
       </div>
-      <div className="w-full h-2.5 rounded-full bg-muted/40 overflow-hidden">
+      <div className="w-full h-3 rounded-full bg-muted/30 overflow-hidden border border-border/30">
         <div
-          className="h-full rounded-full progress-bar transition-all duration-700 ease-out"
+          className="h-full rounded-full progress-gradient transition-all duration-700 ease-out"
           style={{ width: `${pct}%` }}
         />
       </div>

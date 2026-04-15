@@ -13,22 +13,22 @@ function LoginForm() {
 
   return (
     <div className="w-full max-w-sm animate-float-up">
-      <div className="flex flex-col items-center text-center mb-8">
-        <div className="relative mb-5">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 shadow-xl shadow-primary/15">
-            <Receipt className="h-7 w-7 text-primary" />
+      <div className="flex flex-col items-center text-center mb-10">
+        <div className="relative mb-6">
+          <div className="flex h-18 w-18 items-center justify-center rounded-3xl bg-gradient-to-br from-primary to-primary/50 border border-primary/30 shadow-2xl shadow-primary/30 animate-glow-pulse">
+            <Receipt className="h-8 w-8 text-white" />
           </div>
-          <div className="absolute -inset-3 rounded-3xl bg-primary/8 blur-xl -z-10" />
+          <div className="absolute -inset-5 rounded-full bg-primary/12 blur-2xl -z-10" />
         </div>
-        <h1 className="text-2xl font-bold tracking-tight">
+        <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-foreground to-primary/70 bg-clip-text text-transparent">
           Invoice Fetcher
         </h1>
-        <p className="text-sm text-muted-foreground/70 mt-1.5">
+        <p className="text-sm text-muted-foreground/60 mt-2 font-medium">
           Automated invoice detection from your inbox
         </p>
       </div>
 
-      <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm p-7 shadow-2xl shadow-black/20">
+      <div className="card-glow p-8 shadow-2xl shadow-primary/10">
         {error && (
           <div className="mb-5 rounded-xl bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
             {error === "OAuthAccountNotLinked"

@@ -59,12 +59,12 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
   const includedInvoices = included.reduce((n, s) => n + s.invoiceCount, 0);
 
   return (
-    <div className="rounded-2xl border border-secondary/20 bg-gradient-to-br from-secondary/5 via-card/80 to-card/80 backdrop-blur-sm p-5 space-y-4 shadow-lg shadow-secondary/5">
+    <div className="card-glow-green p-5 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-secondary/12 border border-secondary/20 shadow-sm shadow-secondary/5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-secondary/15 border border-secondary/25 shadow-md shadow-secondary/10">
               <Building2 className="h-4 w-4 text-secondary" />
             </div>
             <span className="text-sm font-bold text-foreground">

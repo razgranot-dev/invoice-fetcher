@@ -112,10 +112,10 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
   return (
     <>
       {/* Desktop table */}
-      <div className="hidden md:block rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+      <div className="hidden md:block card-glow overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border/50 bg-muted/20">
+            <tr className="border-b border-border/40 bg-gradient-to-r from-primary/8 via-muted/20 to-secondary/5">
               <th className="w-10 px-3 py-3.5">
                 <button
                   onClick={toggleAll}
@@ -166,11 +166,11 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
               return (
                 <tr
                   key={inv.id}
-                  className={`transition-all duration-200 ${
+                  className={`row-indicator transition-all duration-200 ${
                     isExcluded
-                      ? "bg-muted/5 opacity-50"
+                      ? "bg-muted/5 opacity-40"
                       : "hover:bg-muted/10"
-                  } ${isSelected ? "bg-primary/5 hover:bg-primary/8" : ""}`}
+                  } ${isSelected ? "bg-primary/8 hover:bg-primary/12" : ""}`}
                 >
                   <td className="px-3 py-3">
                     <button
@@ -337,7 +337,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
 
       {/* Bulk action bar */}
       {selectedIds.length > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl border border-border/60 glass-strong px-6 py-3.5 shadow-2xl shadow-black/30 animate-float-up">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl border border-primary/20 glass px-6 py-3.5 shadow-2xl shadow-primary/15 animate-float-up">
           <span className="text-sm font-bold tabular-nums text-primary">
             {selectedIds.length} selected
           </span>

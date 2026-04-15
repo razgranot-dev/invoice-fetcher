@@ -13,20 +13,24 @@ interface StatCardProps {
 
 const accentMap = {
   primary: {
-    icon: "text-primary bg-primary/10 border-primary/15 shadow-primary/8",
-    glow: "group-hover:shadow-primary/10",
+    icon: "text-primary bg-primary/15 border-primary/25 shadow-lg shadow-primary/15",
+    strip: "accent-strip-primary",
+    glow: "group-hover:shadow-primary/20",
   },
   secondary: {
-    icon: "text-secondary bg-secondary/10 border-secondary/15 shadow-secondary/8",
-    glow: "group-hover:shadow-secondary/10",
+    icon: "text-secondary bg-secondary/15 border-secondary/25 shadow-lg shadow-secondary/15",
+    strip: "accent-strip-green",
+    glow: "group-hover:shadow-secondary/20",
   },
   accent: {
-    icon: "text-accent bg-accent/10 border-accent/15 shadow-accent/8",
-    glow: "group-hover:shadow-accent/10",
+    icon: "text-accent bg-accent/15 border-accent/25 shadow-lg shadow-accent/15",
+    strip: "accent-strip-amber",
+    glow: "group-hover:shadow-accent/20",
   },
   destructive: {
-    icon: "text-destructive bg-destructive/10 border-destructive/15 shadow-destructive/8",
-    glow: "group-hover:shadow-destructive/10",
+    icon: "text-destructive bg-destructive/15 border-destructive/25 shadow-lg shadow-destructive/15",
+    strip: "accent-strip-primary",
+    glow: "group-hover:shadow-destructive/20",
   },
 };
 
@@ -43,48 +47,43 @@ export function StatCard({
   return (
     <div
       className={cn(
-        "group relative overflow-hidden rounded-2xl border border-border/60 bg-card p-5",
-        "transition-all duration-300 ease-out",
-        "hover:border-border hover:shadow-xl hover:shadow-black/20",
-        "hover:-translate-y-0.5",
+        "card-glow group relative p-6 hover-lift",
+        accent.strip,
         accent.glow,
         className
       )}
     >
-      {/* Subtle gradient overlay */}
-      <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none aurora-bg" />
-
       <div className="relative flex items-start justify-between">
-        <div className="space-y-2">
-          <p className="text-[13px] font-medium text-muted-foreground tracking-wide uppercase">
+        <div className="space-y-2.5">
+          <p className="text-[11px] font-bold text-muted-foreground/70 tracking-[0.15em] uppercase">
             {label}
           </p>
-          <p className="text-3xl font-bold tracking-tight">{value}</p>
+          <p className="text-4xl font-black tracking-tight">{value}</p>
           {subtitle && (
-            <p className="text-xs text-muted-foreground/80">{subtitle}</p>
+            <p className="text-xs text-muted-foreground/60 font-medium">{subtitle}</p>
           )}
         </div>
         <div
           className={cn(
-            "flex h-11 w-11 items-center justify-center rounded-xl border shadow-lg",
+            "flex h-12 w-12 items-center justify-center rounded-2xl border",
             accent.icon
           )}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className="h-5.5 w-5.5" />
         </div>
       </div>
       {trend && (
-        <div className="relative mt-3 flex items-center gap-1.5 text-xs">
+        <div className="relative mt-4 flex items-center gap-2 text-xs">
           <span
             className={cn(
-              "font-semibold",
-              trend.value >= 0 ? "text-secondary" : "text-destructive"
+              "font-bold px-2 py-0.5 rounded-md",
+              trend.value >= 0 ? "text-secondary bg-secondary/10" : "text-destructive bg-destructive/10"
             )}
           >
             {trend.value >= 0 ? "+" : ""}
             {trend.value}%
           </span>
-          <span className="text-muted-foreground">{trend.label}</span>
+          <span className="text-muted-foreground/70">{trend.label}</span>
         </div>
       )}
     </div>

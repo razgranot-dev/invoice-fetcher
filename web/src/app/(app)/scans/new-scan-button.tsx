@@ -53,14 +53,14 @@ export function NewScanButton() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4">
-      <div className="w-full max-w-md rounded-2xl border border-border/60 bg-card shadow-2xl shadow-black/30 p-7 animate-scale-in">
-        <div className="flex items-center justify-between mb-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-lg p-4">
+      <div className="w-full max-w-md card-glow p-8 shadow-2xl shadow-primary/10 animate-scale-in">
+        <div className="flex items-center justify-between mb-7">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 border border-primary/15">
-              <Sparkles className="h-4 w-4 text-primary" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/25 shadow-lg shadow-primary/15">
+              <Sparkles className="h-4.5 w-4.5 text-primary" />
             </div>
-            <h2 className="text-base font-bold">New Inbox Scan</h2>
+            <h2 className="text-lg font-black">New Inbox Scan</h2>
           </div>
           <button
             onClick={() => setShowForm(false)}
@@ -80,12 +80,12 @@ export function NewScanButton() {
               name="keywords"
               type="text"
               placeholder="invoice, receipt..."
-              className="w-full rounded-xl border border-border/60 bg-muted/20 px-4 py-2.5 text-sm outline-none transition-all duration-200 focus:border-primary/30 focus:ring-2 focus:ring-primary/10 focus:bg-muted/30 placeholder:text-muted-foreground/40"
+              className="w-full rounded-xl border border-border/50 bg-muted/15 px-4 py-3 text-sm outline-none transition-all duration-250 focus:border-primary/40 focus:ring-2 focus:ring-primary/15 focus:bg-muted/25 focus:shadow-md focus:shadow-primary/5 placeholder:text-muted-foreground/35"
             />
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-muted-foreground tracking-wide uppercase">
+            <label className="text-xs font-bold text-muted-foreground/70 tracking-wider uppercase">
               Days back
             </label>
             <input
@@ -94,7 +94,7 @@ export function NewScanButton() {
               defaultValue={30}
               min={1}
               max={365}
-              className="mt-2 w-full rounded-xl border border-border/60 bg-muted/20 px-4 py-2.5 text-sm outline-none transition-all duration-200 focus:border-primary/30 focus:ring-2 focus:ring-primary/10 focus:bg-muted/30"
+              className="mt-2 w-full rounded-xl border border-border/50 bg-muted/15 px-4 py-3 text-sm outline-none transition-all duration-250 focus:border-primary/40 focus:ring-2 focus:ring-primary/15 focus:bg-muted/25 focus:shadow-md focus:shadow-primary/5"
             />
           </div>
 

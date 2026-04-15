@@ -67,7 +67,7 @@ export default async function ScanDetailPage({
       )}
 
       {/* Scan metadata */}
-      <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm p-6 shadow-lg shadow-black/5">
+      <div className="card-glow p-6">
         {(() => {
           const includedCount = scan.invoices.filter((i) => i.reportStatus === "INCLUDED").length;
           const reviewCount = scan.invoices.filter((i) => i.reportStatus === "EXCLUDED").length;
@@ -118,8 +118,8 @@ export default async function ScanDetailPage({
 
       {/* Invoice results */}
       {scan.invoices.length > 0 ? (
-        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
-          <div className="px-6 py-4 border-b border-border/40">
+        <div className="card-glow overflow-hidden">
+          <div className="px-6 py-4 border-b border-border/30 bg-gradient-to-r from-primary/5 to-transparent">
             <h2 className="text-sm font-bold">
               {scan.invoices.length} Result{scan.invoices.length !== 1 ? "s" : ""} Saved
               {(() => {
@@ -153,8 +153,8 @@ export default async function ScanDetailPage({
               return (
                 <div
                   key={inv.id}
-                  className={`flex items-center justify-between px-6 py-3.5 transition-all duration-200 ${
-                    isExcluded ? "bg-muted/5 opacity-50" : "hover:bg-muted/10"
+                  className={`row-indicator flex items-center justify-between px-6 py-3.5 transition-all duration-200 ${
+                    isExcluded ? "bg-muted/5 opacity-40" : "hover:bg-muted/10"
                   }`}
                 >
                   <div className="flex items-center gap-3.5 min-w-0 flex-1">

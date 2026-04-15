@@ -63,13 +63,13 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
       />
 
       {/* Panel */}
-      <div className="fixed inset-y-0 left-0 z-50 w-[280px] bg-sidebar border-r border-sidebar-border lg:hidden animate-slide-in shadow-2xl shadow-black/40">
-        <div className="flex h-16 items-center justify-between px-4 border-b border-sidebar-border">
+      <div className="fixed inset-y-0 left-0 z-50 w-[280px] sidebar-gradient border-r border-sidebar-border/60 lg:hidden animate-slide-in shadow-2xl shadow-black/50">
+        <div className="flex h-16 items-center justify-between px-4 border-b border-sidebar-border/60">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 shadow-lg shadow-primary/10">
-              <Receipt className="h-4.5 w-4.5 text-primary" />
+            <div className="relative flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-primary/60 border border-primary/30 shadow-xl shadow-primary/25">
+              <Receipt className="h-5 w-5 text-white" />
             </div>
-            <span className="text-sm font-bold tracking-tight text-foreground">
+            <span className="text-sm font-black tracking-tight text-foreground">
               Invoice Fetcher
             </span>
           </div>
@@ -104,16 +104,16 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
                     : onClose
                 }
                 className={cn(
-                  "flex items-center gap-3 rounded-xl px-3 py-3 text-[13px] font-medium transition-all duration-200",
+                  "flex items-center gap-3 rounded-xl px-3.5 py-3 text-[13px] font-semibold transition-all duration-250",
                   isActive
-                    ? "bg-primary/10 text-foreground border border-primary/15"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-foreground border border-transparent"
+                    ? "bg-gradient-to-r from-primary/15 to-primary/5 text-foreground border border-primary/25 shadow-lg shadow-primary/10"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-foreground border border-transparent hover:border-border/30"
                 )}
               >
                 <item.icon
                   className={cn(
-                    "h-[18px] w-[18px] shrink-0",
-                    isActive ? "text-primary" : "text-muted-foreground"
+                    "h-[18px] w-[18px] shrink-0 transition-all duration-250",
+                    isActive ? "text-primary drop-shadow-[0_0_6px_rgba(124,92,255,0.5)]" : "text-muted-foreground"
                   )}
                 />
                 <span>{item.name}</span>

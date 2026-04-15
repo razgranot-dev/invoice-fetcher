@@ -132,7 +132,7 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
       </div>
 
       {showFilters && (
-        <div className="rounded-2xl border border-border/60 bg-card/60 backdrop-blur-sm p-5 flex flex-wrap gap-5 animate-scale-in">
+        <div className="card-glow p-5 flex flex-wrap gap-5 animate-scale-in">
           {/* Report inclusion filter */}
           <div>
             <label className="text-[11px] font-semibold text-muted-foreground/70 tracking-wider uppercase block mb-2">
@@ -147,10 +147,10 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
                 <button
                   key={opt.value}
                   onClick={() => updateParams({ report: opt.value || null })}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all duration-250 ${
                     currentReport === opt.value
-                      ? "bg-primary/15 text-primary border border-primary/20 shadow-sm shadow-primary/5"
-                      : "bg-muted/30 text-muted-foreground/70 hover:bg-muted/50 hover:text-foreground border border-transparent"
+                      ? "bg-primary/15 text-primary border border-primary/25 shadow-md shadow-primary/10"
+                      : "bg-muted/25 text-muted-foreground/60 hover:bg-muted/40 hover:text-foreground border border-border/30 hover:border-primary/15"
                   }`}
                 >
                   {opt.label}

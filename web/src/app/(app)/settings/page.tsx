@@ -25,11 +25,11 @@ export default async function SettingsPage() {
     <div className="space-y-8">
       <PageHeader title="Settings" description="Manage your account and workspace" />
 
-      <div className="space-y-5 stagger-children">
+      <div className="space-y-5 stagger">
         {/* Gmail Connections */}
-        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+        <div className="card-glow overflow-hidden">
           <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/8 border border-primary/12 shadow-sm shadow-primary/5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/15 border border-primary/25 shadow-md shadow-primary/10">
               <Mail className="h-4 w-4 text-primary" />
             </div>
             <div>
@@ -85,9 +85,9 @@ export default async function SettingsPage() {
         </div>
 
         {/* Organization */}
-        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+        <div className="card-glow overflow-hidden">
           <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/8 border border-accent/12 shadow-sm shadow-accent/5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/15 border border-accent/25 shadow-md shadow-accent/10">
               <Building2 className="h-4 w-4 text-accent" />
             </div>
             <div>
@@ -110,9 +110,9 @@ export default async function SettingsPage() {
         </div>
 
         {/* Team */}
-        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+        <div className="card-glow overflow-hidden">
           <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-secondary/8 border border-secondary/12 shadow-sm shadow-secondary/5">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-secondary/15 border border-secondary/25 shadow-md shadow-secondary/10">
               <Users className="h-4 w-4 text-secondary" />
             </div>
             <div>
@@ -150,7 +150,7 @@ export default async function SettingsPage() {
         </div>
 
         {/* Security / Account */}
-        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+        <div className="card-glow overflow-hidden">
           <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-muted/40 border border-border/60 shadow-sm">
               <Shield className="h-4 w-4 text-muted-foreground" />

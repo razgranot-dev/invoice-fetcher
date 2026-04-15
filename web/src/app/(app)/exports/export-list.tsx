@@ -122,7 +122,7 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
   };
 
   return (
-    <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm divide-y divide-border/40 overflow-hidden shadow-lg shadow-black/5">
+    <div className="card-glow divide-y divide-border/30 overflow-hidden">
       {exports.map((exp) => {
         const Icon =
           formatIcon[exp.format as keyof typeof formatIcon] || Download;
@@ -134,10 +134,10 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
         return (
           <div
             key={exp.id}
-            className="flex items-center justify-between px-6 py-4.5 hover:bg-muted/10 transition-all duration-200 group"
+            className="row-indicator flex items-center justify-between px-6 py-5 hover:bg-muted/10 transition-all duration-250 group"
           >
             <div className="flex items-center gap-4 min-w-0">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary/8 border border-secondary/12 shrink-0 shadow-sm shadow-secondary/5 group-hover:shadow-md group-hover:shadow-secondary/10 transition-shadow duration-200">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-secondary/12 border border-secondary/20 shrink-0 shadow-md shadow-secondary/8 group-hover:shadow-lg group-hover:shadow-secondary/15 transition-all duration-250 group-hover:scale-105">
                 <Icon className="h-4.5 w-4.5 text-secondary" />
               </div>
               <div className="min-w-0">
@@ -157,9 +157,9 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
 
                 {isCancellable && (
                   <div className="flex items-center gap-2.5 mt-2">
-                    <div className="h-2 flex-1 max-w-[240px] rounded-full bg-muted/40 overflow-hidden">
+                    <div className="h-2.5 flex-1 max-w-[240px] rounded-full bg-muted/30 overflow-hidden border border-border/30">
                       <div
-                        className="h-full rounded-full progress-bar transition-all duration-700"
+                        className="h-full rounded-full progress-gradient transition-all duration-700"
                         style={{ width: `${pct}%` }}
                       />
                     </div>

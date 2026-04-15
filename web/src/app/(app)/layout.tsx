@@ -19,10 +19,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       </Suspense>
       <div className="flex flex-1 flex-col overflow-hidden">
         <Topbar onMenuClick={() => setMobileNavOpen(true)} />
-        <main className="flex-1 overflow-y-auto">
-          {/* Ambient aurora glow */}
-          <div className="pointer-events-none fixed top-0 right-0 w-[600px] h-[600px] opacity-30 aurora-bg -z-10" />
-          <div className="mx-auto max-w-6xl px-4 py-8 lg:px-8 lg:py-10">
+        <main className="flex-1 overflow-y-auto aurora">
+          <div className="mx-auto max-w-6xl px-4 py-8 lg:px-8 lg:py-10 relative">
             {children}
           </div>
         </main>

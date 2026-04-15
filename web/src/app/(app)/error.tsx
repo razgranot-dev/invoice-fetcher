@@ -17,20 +17,20 @@ export default function AppError({
 
   return (
     <div className="flex flex-col items-center justify-center py-28 px-4 text-center animate-float-up">
-      <div className="relative mb-6">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-destructive/10 border border-destructive/20 shadow-lg shadow-destructive/10">
-          <AlertTriangle className="h-6 w-6 text-destructive" />
+      <div className="relative mb-8">
+        <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-destructive/20 to-destructive/5 border border-destructive/25 shadow-2xl shadow-destructive/15 animate-glow-pulse">
+          <AlertTriangle className="h-9 w-9 text-destructive" />
         </div>
-        <div className="absolute -inset-3 rounded-3xl bg-destructive/5 blur-xl -z-10" />
+        <div className="absolute -inset-6 rounded-full bg-destructive/8 blur-2xl -z-10" />
       </div>
-      <h2 className="text-lg font-bold text-foreground mb-2">
+      <h2 className="text-xl font-black text-foreground mb-2.5">
         Something went wrong
       </h2>
-      <p className="text-sm text-muted-foreground/70 max-w-md mb-8 leading-relaxed">
+      <p className="text-sm text-muted-foreground/60 max-w-md mb-8 leading-relaxed">
         An unexpected error occurred while loading this page. Please try again.
       </p>
-      <Button variant="outline" size="sm" onClick={reset}>
-        <RotateCcw className="h-3.5 w-3.5" />
+      <Button variant="destructive" size="lg" onClick={reset}>
+        <RotateCcw className="h-4 w-4" />
         Try again
       </Button>
     </div>

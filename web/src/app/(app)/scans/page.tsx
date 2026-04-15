@@ -50,11 +50,11 @@ export default async function ScansPage() {
       </PageHeader>
 
       {!hasConnection && (
-        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm p-8 text-center animate-float-up">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-muted/40 border border-border/60 mx-auto mb-4 shadow-lg">
-            <Mail className="h-6 w-6 text-muted-foreground/60" />
+        <div className="card-glow p-10 text-center animate-float-up">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-muted/30 border border-primary/20 mx-auto mb-5 shadow-xl shadow-primary/10 animate-glow-pulse">
+            <Mail className="h-7 w-7 text-primary/60" />
           </div>
-          <p className="text-sm font-semibold mb-1.5">No Gmail account connected</p>
+          <p className="text-base font-bold mb-1.5">No Gmail account connected</p>
           <p className="text-xs text-muted-foreground leading-relaxed max-w-sm mx-auto">
             Your Gmail was connected during sign-in. If you see this, try signing
             out and signing in again.
@@ -63,7 +63,7 @@ export default async function ScansPage() {
       )}
 
       {scans.length > 0 ? (
-        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm divide-y divide-border/40 overflow-hidden shadow-lg shadow-black/5">
+        <div className="card-glow divide-y divide-border/30 overflow-hidden">
           {scans.map((scan) => {
             const config =
               statusConfig[scan.status as keyof typeof statusConfig] ??
@@ -73,10 +73,10 @@ export default async function ScansPage() {
               <Link
                 key={scan.id}
                 href={`/scans/${scan.id}`}
-                className="flex items-center justify-between px-6 py-4 hover:bg-muted/15 transition-all duration-200 group"
+                className="row-indicator flex items-center justify-between px-6 py-4.5 hover:bg-muted/12 transition-all duration-250 group"
               >
                 <div className="flex items-center gap-4 min-w-0">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/8 border border-primary/12 shrink-0 shadow-sm shadow-primary/5 group-hover:shadow-md group-hover:shadow-primary/10 transition-shadow duration-200">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/12 border border-primary/20 shrink-0 shadow-md shadow-primary/8 group-hover:shadow-lg group-hover:shadow-primary/15 transition-all duration-250 group-hover:scale-105">
                     <ScanSearch className="h-4.5 w-4.5 text-primary" />
                   </div>
                   <div className="min-w-0">
