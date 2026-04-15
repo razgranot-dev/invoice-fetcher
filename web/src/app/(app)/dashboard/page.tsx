@@ -48,7 +48,7 @@ export default async function DashboardPage() {
 
       {hasData ? (
         <>
-          {/* KPI Cards — stagger animation */}
+          {/* KPI Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 stagger">
             <StatCard
               label="Total Invoices"
@@ -77,43 +77,43 @@ export default async function DashboardPage() {
             />
           </div>
 
-          {/* Bento 2-column layout */}
+          {/* Bento layout */}
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
             {/* Recent invoices — wider */}
             <div className="lg:col-span-3 card-glow accent-strip-primary">
               <div className="flex items-center justify-between px-6 py-4 border-b border-border/40">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/15 border border-primary/25 shadow-md shadow-primary/10">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 border border-primary/15 shadow-sm shadow-primary/8">
                     <FileText className="h-4 w-4 text-primary" />
                   </div>
-                  <h2 className="text-sm font-bold">Recent Invoices</h2>
+                  <h2 className="text-sm font-bold text-foreground">Recent Invoices</h2>
                 </div>
                 <Link
                   href="/invoices"
-                  className="text-xs font-bold text-primary/80 hover:text-primary flex items-center gap-1.5 transition-colors group"
+                  className="text-xs font-bold text-primary hover:text-primary/80 flex items-center gap-1.5 transition-colors group"
                 >
                   View all <ArrowRight className="h-3 w-3 group-hover:translate-x-1 transition-transform" />
                 </Link>
               </div>
-              <div className="divide-y divide-border/30">
+              <div className="divide-y divide-border/40">
                 {recentInvoices.map((inv) => {
                   const badge = tierBadge[inv.classificationTier] ?? tierBadge.not_invoice;
                   return (
                     <div
                       key={inv.id}
-                      className="row-indicator flex items-center justify-between px-6 py-3.5 hover:bg-muted/15 transition-all duration-200"
+                      className="row-indicator flex items-center justify-between px-6 py-3.5 hover:bg-muted/40 transition-all duration-200"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold truncate">
+                        <p className="text-sm font-semibold text-foreground truncate">
                           {inv.company ?? inv.subject}
                         </p>
-                        <p className="text-xs text-muted-foreground/60 truncate mt-0.5">
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">
                           {inv.subject}
                         </p>
                       </div>
                       <div className="flex items-center gap-3 ml-4 shrink-0">
                         {inv.amount && (
-                          <span className="text-sm font-mono font-bold tabular-nums text-foreground/90">
+                          <span className="text-sm font-mono font-bold tabular-nums text-foreground">
                             {formatCurrency(inv.amount, inv.currency)}
                           </span>
                         )}
@@ -130,33 +130,33 @@ export default async function DashboardPage() {
               <div className="lg:col-span-2 card-glow-green accent-strip-green">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-border/40">
                   <div className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-secondary/15 border border-secondary/25 shadow-md shadow-secondary/10">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-secondary/10 border border-secondary/15 shadow-sm shadow-secondary/8">
                       <ScanSearch className="h-4 w-4 text-secondary" />
                     </div>
-                    <h2 className="text-sm font-bold">Recent Scans</h2>
+                    <h2 className="text-sm font-bold text-foreground">Recent Scans</h2>
                   </div>
                   <Link
                     href="/scans"
-                    className="text-xs font-bold text-secondary/80 hover:text-secondary flex items-center gap-1.5 transition-colors group"
+                    className="text-xs font-bold text-secondary hover:text-secondary/80 flex items-center gap-1.5 transition-colors group"
                   >
                     All <ArrowRight className="h-3 w-3 group-hover:translate-x-1 transition-transform" />
                   </Link>
                 </div>
-                <div className="divide-y divide-border/30">
+                <div className="divide-y divide-border/40">
                   {recentScans.map((scan) => (
                     <div
                       key={scan.id}
-                      className="row-indicator flex items-center justify-between px-6 py-3.5 hover:bg-muted/15 transition-all duration-200"
+                      className="row-indicator flex items-center justify-between px-6 py-3.5 hover:bg-muted/40 transition-all duration-200"
                     >
                       <div className="flex items-center gap-3.5">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-secondary/10 border border-secondary/20 shadow-sm shadow-secondary/8">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-secondary/8 border border-secondary/15 shadow-sm shadow-secondary/5">
                           <Mail className="h-4 w-4 text-secondary" />
                         </div>
                         <div>
-                          <p className="text-sm font-semibold">
+                          <p className="text-sm font-semibold text-foreground">
                             {scan.connection.email}
                           </p>
-                          <p className="text-xs text-muted-foreground/60">
+                          <p className="text-xs text-muted-foreground">
                             {scan.invoiceCount} invoices from{" "}
                             {scan.totalMessages} msgs
                           </p>
@@ -186,14 +186,13 @@ export default async function DashboardPage() {
         </>
       ) : (
         <div className="flex flex-col items-center justify-center py-24 px-6 text-center animate-float-up">
-          <div className="relative mb-8">
-            <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-primary/20 to-secondary/10 border border-primary/20 shadow-2xl shadow-primary/15 animate-glow-pulse">
+          <div className="relative mb-8 orb-glow">
+            <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-primary/15 to-secondary/10 border border-primary/15 shadow-2xl shadow-primary/10 animate-glow-pulse">
               <ScanSearch className="h-9 w-9 text-primary/70" />
             </div>
-            <div className="absolute -inset-6 rounded-full bg-primary/8 blur-2xl -z-10" />
           </div>
-          <h3 className="text-xl font-bold mb-2.5">No scans yet</h3>
-          <p className="text-sm text-muted-foreground/70 max-w-md mb-8 leading-relaxed">
+          <h3 className="text-xl font-bold text-foreground mb-2.5">No scans yet</h3>
+          <p className="text-sm text-muted-foreground max-w-md mb-8 leading-relaxed">
             Your Gmail account is connected. Run your first scan to start detecting invoices automatically.
           </p>
           <Link href="/scans">

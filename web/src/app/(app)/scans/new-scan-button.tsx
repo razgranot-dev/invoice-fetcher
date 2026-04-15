@@ -53,18 +53,18 @@ export function NewScanButton() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-lg p-4">
-      <div className="w-full max-w-md card-glow p-8 shadow-2xl shadow-primary/10 animate-scale-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/15 backdrop-blur-lg p-4">
+      <div className="w-full max-w-md card-glow p-8 shadow-2xl shadow-primary/8 animate-scale-in">
         <div className="flex items-center justify-between mb-7">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/25 shadow-lg shadow-primary/15">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/5 border border-primary/15 shadow-lg shadow-primary/8">
               <Sparkles className="h-4.5 w-4.5 text-primary" />
             </div>
-            <h2 className="text-lg font-black">New Inbox Scan</h2>
+            <h2 className="text-lg font-black text-foreground">New Inbox Scan</h2>
           </div>
           <button
             onClick={() => setShowForm(false)}
-            className="p-2 rounded-xl hover:bg-muted/40 transition-colors"
+            className="p-2 rounded-xl hover:bg-muted/60 transition-colors"
           >
             <X className="h-4 w-4 text-muted-foreground" />
           </button>
@@ -72,20 +72,20 @@ export function NewScanButton() {
 
         <form onSubmit={handleScan} className="space-y-5">
           <div>
-            <label className="text-xs font-semibold text-muted-foreground tracking-wide uppercase">
+            <label className="text-xs font-bold text-muted-foreground tracking-wider uppercase">
               Keywords
             </label>
-            <p className="text-[11px] text-muted-foreground/60 mt-0.5 mb-2">Comma-separated, or leave empty for defaults</p>
+            <p className="text-[11px] text-muted-foreground/70 mt-0.5 mb-2">Comma-separated, or leave empty for defaults</p>
             <input
               name="keywords"
               type="text"
               placeholder="invoice, receipt..."
-              className="w-full rounded-xl border border-border/50 bg-muted/15 px-4 py-3 text-sm outline-none transition-all duration-250 focus:border-primary/40 focus:ring-2 focus:ring-primary/15 focus:bg-muted/25 focus:shadow-md focus:shadow-primary/5 placeholder:text-muted-foreground/35"
+              className="w-full rounded-xl border border-border/60 bg-white/60 backdrop-blur-sm px-4 py-3 text-sm outline-none transition-all duration-300 focus:border-primary/30 focus:ring-2 focus:ring-primary/10 focus:bg-white focus:shadow-md focus:shadow-primary/5 placeholder:text-muted-foreground/40 text-foreground"
             />
           </div>
 
           <div>
-            <label className="text-xs font-bold text-muted-foreground/70 tracking-wider uppercase">
+            <label className="text-xs font-bold text-muted-foreground tracking-wider uppercase">
               Days back
             </label>
             <input
@@ -94,7 +94,7 @@ export function NewScanButton() {
               defaultValue={30}
               min={1}
               max={365}
-              className="mt-2 w-full rounded-xl border border-border/50 bg-muted/15 px-4 py-3 text-sm outline-none transition-all duration-250 focus:border-primary/40 focus:ring-2 focus:ring-primary/15 focus:bg-muted/25 focus:shadow-md focus:shadow-primary/5"
+              className="mt-2 w-full rounded-xl border border-border/60 bg-white/60 backdrop-blur-sm px-4 py-3 text-sm outline-none transition-all duration-300 focus:border-primary/30 focus:ring-2 focus:ring-primary/10 focus:bg-white focus:shadow-md focus:shadow-primary/5 text-foreground"
             />
           </div>
 

@@ -97,13 +97,13 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
   if (compact) {
     return (
       <div className="flex items-center gap-2.5 text-xs">
-        <div className="w-28 h-2.5 rounded-full bg-muted/50 overflow-hidden border border-border/30">
+        <div className="w-28 h-2.5 rounded-full bg-muted/50 overflow-hidden border border-border/40">
           <div
             className="h-full rounded-full progress-gradient transition-all duration-700 ease-out"
             style={{ width: `${pct}%` }}
           />
         </div>
-        <span className="text-muted-foreground tabular-nums font-medium">{pct}%</span>
+        <span className="text-muted-foreground tabular-nums font-bold">{pct}%</span>
         <button
           onClick={(e) => {
             e.preventDefault();
@@ -121,18 +121,17 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
   }
 
   return (
-    <div className="space-y-4 p-6 rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/8 to-primary/3 backdrop-blur-sm shadow-lg shadow-primary/5">
+    <div className="space-y-4 p-6 card-glow !border-primary/20 animate-border-glow">
       <div className="flex items-center gap-3">
-        <div className="relative">
-          <div className="absolute -inset-2 rounded-full bg-primary/10 blur-md animate-glow-pulse" />
+        <div className="relative orb-glow">
           <Loader2 className="h-6 w-6 animate-spin text-primary relative" />
         </div>
-        <span className="text-sm font-bold">Scanning inbox...</span>
+        <span className="text-sm font-bold text-foreground">Scanning inbox...</span>
         <span className="text-base tabular-nums font-black text-primary ml-auto">
           {pct}%
         </span>
       </div>
-      <div className="w-full h-3 rounded-full bg-muted/30 overflow-hidden border border-border/30">
+      <div className="w-full h-3 rounded-full bg-muted/40 overflow-hidden border border-border/40">
         <div
           className="h-full rounded-full progress-gradient transition-all duration-700 ease-out"
           style={{ width: `${pct}%` }}
@@ -140,7 +139,7 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
       </div>
       <div className="flex items-center justify-between">
         {data.progressMessage && (
-          <p className="text-xs text-muted-foreground/80">{data.progressMessage}</p>
+          <p className="text-xs text-muted-foreground">{data.progressMessage}</p>
         )}
         <Button
           variant="ghost"

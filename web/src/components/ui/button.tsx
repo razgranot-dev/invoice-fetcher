@@ -4,21 +4,21 @@ import { forwardRef } from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-semibold tracking-wide transition-all duration-250 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-35 cursor-pointer",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-semibold tracking-wide transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-40 cursor-pointer",
   {
     variants: {
       variant: {
         default:
-          "bg-gradient-to-br from-primary via-primary to-[#6340e0] text-primary-foreground shadow-lg shadow-primary/25 hover:shadow-xl hover:shadow-primary/40 hover:brightness-115 active:scale-[0.96]",
+          "bg-gradient-to-br from-primary via-primary to-[#5a4bd6] text-primary-foreground shadow-lg shadow-primary/20 hover:shadow-xl hover:shadow-primary/30 hover:-translate-y-0.5 active:scale-[0.97] shine-sweep",
         secondary:
-          "bg-gradient-to-br from-muted/90 to-muted/60 text-foreground border border-border/80 hover:border-primary/25 hover:bg-muted hover:shadow-md hover:shadow-primary/5 active:scale-[0.96]",
+          "bg-white/80 backdrop-blur-sm text-foreground border border-border/80 shadow-sm hover:border-primary/25 hover:bg-white hover:shadow-md hover:shadow-primary/8 active:scale-[0.97]",
         outline:
-          "border border-border/70 bg-card/40 backdrop-blur-sm hover:bg-primary/8 hover:border-primary/30 hover:shadow-md hover:shadow-primary/10 active:scale-[0.96]",
-        ghost: "hover:bg-muted/50 hover:text-foreground hover:shadow-sm",
+          "border border-border/70 bg-white/50 backdrop-blur-sm hover:bg-primary/5 hover:border-primary/30 hover:shadow-md hover:shadow-primary/8 active:scale-[0.97]",
+        ghost: "hover:bg-muted/60 hover:text-foreground hover:shadow-sm",
         destructive:
-          "bg-gradient-to-br from-destructive to-destructive/80 text-destructive-foreground shadow-lg shadow-destructive/25 hover:shadow-xl hover:shadow-destructive/40 hover:brightness-110 active:scale-[0.96]",
-        link: "text-primary underline-offset-4 hover:underline hover:text-primary/80",
-        glow: "bg-gradient-to-br from-primary via-[#8b6aff] to-[#6340e0] text-primary-foreground shadow-xl shadow-primary/30 hover:shadow-2xl hover:shadow-primary/50 hover:brightness-115 hover:-translate-y-0.5 active:scale-[0.96] animate-glow-pulse",
+          "bg-gradient-to-br from-destructive to-[#c0392b] text-destructive-foreground shadow-lg shadow-destructive/20 hover:shadow-xl hover:shadow-destructive/30 hover:-translate-y-0.5 active:scale-[0.97] shine-sweep",
+        link: "text-primary underline-offset-4 hover:underline",
+        glow: "bg-gradient-to-br from-[#7c6cf0] via-primary to-[#5a4bd6] text-primary-foreground shadow-xl shadow-primary/25 hover:shadow-2xl hover:shadow-primary/40 hover:-translate-y-1 active:scale-[0.97] animate-glow-pulse shine-sweep",
       },
       size: {
         default: "h-10 px-5 py-2",

@@ -115,7 +115,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
       <div className="hidden md:block card-glow overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border/40 bg-gradient-to-r from-primary/8 via-muted/20 to-secondary/5">
+            <tr className="border-b border-border/50 bg-gradient-to-r from-primary/5 via-muted/30 to-secondary/5">
               <th className="w-10 px-3 py-3.5">
                 <button
                   onClick={toggleAll}
@@ -124,7 +124,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       ? "bg-primary border-primary shadow-sm shadow-primary/20"
                       : someSelected
                         ? "bg-primary/50 border-primary shadow-sm shadow-primary/10"
-                        : "border-muted-foreground/20 hover:border-muted-foreground/40"
+                        : "border-border hover:border-primary/30"
                   }`}
                 >
                   {allSelected && (
@@ -135,22 +135,22 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                   )}
                 </button>
               </th>
-              <th className="w-10 px-2 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
+              <th className="w-10 px-2 py-3.5 text-[11px] font-bold text-muted-foreground tracking-wider uppercase">
                 Report
               </th>
-              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
+              <th className="text-left px-4 py-3.5 text-[11px] font-bold text-muted-foreground tracking-wider uppercase">
                 Company
               </th>
-              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
+              <th className="text-left px-4 py-3.5 text-[11px] font-bold text-muted-foreground tracking-wider uppercase">
                 Subject
               </th>
-              <th className="text-right px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
+              <th className="text-right px-4 py-3.5 text-[11px] font-bold text-muted-foreground tracking-wider uppercase">
                 Amount
               </th>
-              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
+              <th className="text-left px-4 py-3.5 text-[11px] font-bold text-muted-foreground tracking-wider uppercase">
                 Date
               </th>
-              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
+              <th className="text-left px-4 py-3.5 text-[11px] font-bold text-muted-foreground tracking-wider uppercase">
                 Status
               </th>
             </tr>
@@ -168,9 +168,9 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                   key={inv.id}
                   className={`row-indicator transition-all duration-200 ${
                     isExcluded
-                      ? "bg-muted/5 opacity-40"
-                      : "hover:bg-muted/10"
-                  } ${isSelected ? "bg-primary/8 hover:bg-primary/12" : ""}`}
+                      ? "bg-muted/20 opacity-50"
+                      : "hover:bg-muted/30"
+                  } ${isSelected ? "bg-primary/5 hover:bg-primary/8" : ""}`}
                 >
                   <td className="px-3 py-3">
                     <button
@@ -178,7 +178,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       className={`flex h-4.5 w-4.5 items-center justify-center rounded-md border transition-all duration-200 ${
                         isSelected
                           ? "bg-primary border-primary shadow-sm shadow-primary/20"
-                          : "border-muted-foreground/20 hover:border-muted-foreground/40"
+                          : "border-border hover:border-primary/30"
                       }`}
                     >
                       {isSelected && (
@@ -196,8 +196,8 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       }
                       className={`flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200 ${
                         isExcluded
-                          ? "text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10"
-                          : "text-secondary hover:text-secondary hover:bg-secondary/10"
+                          ? "text-muted-foreground/40 hover:text-destructive hover:bg-destructive/8"
+                          : "text-secondary hover:text-secondary hover:bg-secondary/8"
                       }`}
                     >
                       {isExcluded ? (
@@ -207,18 +207,18 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       )}
                     </button>
                   </td>
-                  <td className="px-4 py-3 font-semibold">
+                  <td className="px-4 py-3 font-semibold text-foreground">
                     {inv.company ?? "\u2014"}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground/70 max-w-xs truncate">
+                  <td className="px-4 py-3 text-muted-foreground max-w-xs truncate">
                     {inv.subject}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono font-semibold tabular-nums">
+                  <td className="px-4 py-3 text-right font-mono font-semibold tabular-nums text-foreground">
                     {inv.amount
                       ? formatCurrency(inv.amount, inv.currency)
                       : "\u2014"}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground/70 text-xs">
+                  <td className="px-4 py-3 text-muted-foreground text-xs">
                     {inv.date
                       ? new Date(inv.date).toLocaleDateString("en-US", {
                           month: "short",
@@ -233,7 +233,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       {(() => {
                         const reason = getReviewReason(inv);
                         return reason ? (
-                          <span className="text-[10px] font-semibold text-accent bg-accent/10 border border-accent/15 px-1.5 py-0.5 rounded-md whitespace-nowrap">
+                          <span className="text-[10px] font-bold text-accent bg-accent/10 border border-accent/15 px-1.5 py-0.5 rounded-md whitespace-nowrap">
                             {reason}
                           </span>
                         ) : null;
@@ -259,11 +259,9 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
           return (
             <div
               key={inv.id}
-              className={`rounded-2xl border bg-card/80 backdrop-blur-sm p-4 space-y-2 transition-all duration-200 ${
-                isExcluded
-                  ? "border-border/30 opacity-50"
-                  : "border-border/60"
-              } ${isSelected ? "border-primary/30 bg-primary/5 shadow-md shadow-primary/5" : ""}`}
+              className={`card-glow p-4 space-y-2 transition-all duration-200 ${
+                isExcluded ? "opacity-50" : ""
+              } ${isSelected ? "!border-primary/30 !shadow-md !shadow-primary/10" : ""}`}
             >
               <div className="flex items-start gap-3">
                 <button
@@ -271,7 +269,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                   className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all duration-200 ${
                     isSelected
                       ? "bg-primary border-primary shadow-sm shadow-primary/20"
-                      : "border-muted-foreground/20"
+                      : "border-border"
                   }`}
                 >
                   {isSelected && (
@@ -281,7 +279,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-semibold truncate">
+                    <p className="text-sm font-semibold text-foreground truncate">
                       {inv.company ?? inv.sender}
                     </p>
                     <div className="flex items-center gap-1.5 shrink-0">
@@ -289,7 +287,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                         onClick={() => toggleSingle(inv.id, status)}
                         className={`flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200 ${
                           isExcluded
-                            ? "text-muted-foreground/30 hover:text-destructive"
+                            ? "text-muted-foreground/40 hover:text-destructive"
                             : "text-secondary hover:text-secondary"
                         }`}
                       >
@@ -302,18 +300,18 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       <Badge variant={badge.variant}>{badge.label}</Badge>
                     </div>
                   </div>
-                  <p className="text-xs text-muted-foreground/60 line-clamp-2 mt-0.5">
+                  <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
                     {inv.subject}
                   </p>
                   {(() => {
                     const reason = getReviewReason(inv);
                     return reason ? (
-                      <span className="inline-block text-[10px] font-semibold text-accent bg-accent/10 border border-accent/15 px-1.5 py-0.5 rounded-md mt-1.5">
+                      <span className="inline-block text-[10px] font-bold text-accent bg-accent/10 border border-accent/15 px-1.5 py-0.5 rounded-md mt-1.5">
                         {reason}
                       </span>
                     ) : null;
                   })()}
-                  <div className="flex items-center justify-between text-xs text-muted-foreground/60 pt-2">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground pt-2">
                     <span>
                       {inv.date
                         ? new Date(inv.date).toLocaleDateString("en-US", {
@@ -337,16 +335,16 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
 
       {/* Bulk action bar */}
       {selectedIds.length > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl border border-primary/20 glass px-6 py-3.5 shadow-2xl shadow-primary/15 animate-float-up">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl border border-primary/15 glass px-6 py-3.5 shadow-2xl shadow-primary/10 animate-float-up">
           <span className="text-sm font-bold tabular-nums text-primary">
             {selectedIds.length} selected
           </span>
-          <div className="h-5 w-px bg-border/40" />
+          <div className="h-5 w-px bg-border" />
           <Button
             size="sm"
             variant="outline"
             onClick={() => setReportStatus(selectedIds, "INCLUDED")}
-            className="text-secondary border-secondary/25 hover:bg-secondary/10 hover:border-secondary/40"
+            className="text-secondary border-secondary/20 hover:bg-secondary/8 hover:border-secondary/30"
           >
             <FileCheck className="h-3.5 w-3.5" />
             Include
@@ -362,7 +360,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
           </Button>
           <button
             onClick={() => setSelected(new Set())}
-            className="text-xs text-muted-foreground/50 hover:text-foreground ml-1 transition-colors"
+            className="text-xs text-muted-foreground hover:text-foreground ml-1 transition-colors"
           >
             Clear
           </button>

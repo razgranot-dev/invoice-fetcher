@@ -13,24 +13,24 @@ interface StatCardProps {
 
 const accentMap = {
   primary: {
-    icon: "text-primary bg-primary/15 border-primary/25 shadow-lg shadow-primary/15",
+    icon: "text-primary bg-primary/10 border-primary/20 shadow-lg shadow-primary/10",
     strip: "accent-strip-primary",
-    glow: "group-hover:shadow-primary/20",
+    glow: "group-hover:shadow-primary/15",
   },
   secondary: {
-    icon: "text-secondary bg-secondary/15 border-secondary/25 shadow-lg shadow-secondary/15",
+    icon: "text-secondary bg-secondary/10 border-secondary/20 shadow-lg shadow-secondary/10",
     strip: "accent-strip-green",
-    glow: "group-hover:shadow-secondary/20",
+    glow: "group-hover:shadow-secondary/15",
   },
   accent: {
-    icon: "text-accent bg-accent/15 border-accent/25 shadow-lg shadow-accent/15",
+    icon: "text-accent bg-accent/10 border-accent/20 shadow-lg shadow-accent/10",
     strip: "accent-strip-amber",
-    glow: "group-hover:shadow-accent/20",
+    glow: "group-hover:shadow-accent/15",
   },
   destructive: {
-    icon: "text-destructive bg-destructive/15 border-destructive/25 shadow-lg shadow-destructive/15",
+    icon: "text-destructive bg-destructive/10 border-destructive/20 shadow-lg shadow-destructive/10",
     strip: "accent-strip-primary",
-    glow: "group-hover:shadow-destructive/20",
+    glow: "group-hover:shadow-destructive/15",
   },
 };
 
@@ -55,12 +55,12 @@ export function StatCard({
     >
       <div className="relative flex items-start justify-between">
         <div className="space-y-2.5">
-          <p className="text-[11px] font-bold text-muted-foreground/70 tracking-[0.15em] uppercase">
+          <p className="text-[11px] font-bold text-muted-foreground tracking-[0.15em] uppercase">
             {label}
           </p>
-          <p className="text-4xl font-black tracking-tight">{value}</p>
+          <p className="text-4xl font-black tracking-tight text-foreground">{value}</p>
           {subtitle && (
-            <p className="text-xs text-muted-foreground/60 font-medium">{subtitle}</p>
+            <p className="text-xs text-muted-foreground font-medium">{subtitle}</p>
           )}
         </div>
         <div
@@ -83,7 +83,7 @@ export function StatCard({
             {trend.value >= 0 ? "+" : ""}
             {trend.value}%
           </span>
-          <span className="text-muted-foreground/70">{trend.label}</span>
+          <span className="text-muted-foreground">{trend.label}</span>
         </div>
       )}
     </div>

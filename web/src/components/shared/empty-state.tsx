@@ -27,14 +27,13 @@ export function EmptyState({
         className
       )}
     >
-      <div className="relative mb-8">
-        <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-primary/15 to-muted/30 border border-primary/20 shadow-2xl shadow-primary/15 animate-glow-pulse">
+      <div className="relative mb-8 orb-glow">
+        <div className="flex h-20 w-20 items-center justify-center rounded-3xl bg-gradient-to-br from-primary/15 to-primary/5 border border-primary/15 shadow-2xl shadow-primary/10 animate-glow-pulse">
           <Icon className="h-9 w-9 text-primary/70" />
         </div>
-        <div className="absolute -inset-6 rounded-full bg-primary/8 blur-2xl -z-10" />
       </div>
-      <h3 className="text-xl font-bold mb-2.5">{title}</h3>
-      <p className="text-sm text-muted-foreground/70 max-w-md mb-8 leading-relaxed">
+      <h3 className="text-xl font-bold text-foreground mb-2.5">{title}</h3>
+      <p className="text-sm text-muted-foreground max-w-md mb-8 leading-relaxed">
         {description}
       </p>
       {action && (

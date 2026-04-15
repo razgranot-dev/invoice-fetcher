@@ -51,10 +51,10 @@ export default async function ScansPage() {
 
       {!hasConnection && (
         <div className="card-glow p-10 text-center animate-float-up">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-muted/30 border border-primary/20 mx-auto mb-5 shadow-xl shadow-primary/10 animate-glow-pulse">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-muted/30 border border-primary/15 mx-auto mb-5 shadow-xl shadow-primary/8 animate-glow-pulse orb-glow">
             <Mail className="h-7 w-7 text-primary/60" />
           </div>
-          <p className="text-base font-bold mb-1.5">No Gmail account connected</p>
+          <p className="text-base font-bold text-foreground mb-1.5">No Gmail account connected</p>
           <p className="text-xs text-muted-foreground leading-relaxed max-w-sm mx-auto">
             Your Gmail was connected during sign-in. If you see this, try signing
             out and signing in again.
@@ -63,7 +63,7 @@ export default async function ScansPage() {
       )}
 
       {scans.length > 0 ? (
-        <div className="card-glow divide-y divide-border/30 overflow-hidden">
+        <div className="card-glow divide-y divide-border/40 overflow-hidden">
           {scans.map((scan) => {
             const config =
               statusConfig[scan.status as keyof typeof statusConfig] ??
@@ -73,17 +73,17 @@ export default async function ScansPage() {
               <Link
                 key={scan.id}
                 href={`/scans/${scan.id}`}
-                className="row-indicator flex items-center justify-between px-6 py-4.5 hover:bg-muted/12 transition-all duration-250 group"
+                className="row-indicator flex items-center justify-between px-6 py-4.5 hover:bg-muted/30 transition-all duration-300 group"
               >
                 <div className="flex items-center gap-4 min-w-0">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/12 border border-primary/20 shrink-0 shadow-md shadow-primary/8 group-hover:shadow-lg group-hover:shadow-primary/15 transition-all duration-250 group-hover:scale-105">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/8 border border-primary/15 shrink-0 shadow-sm shadow-primary/5 group-hover:shadow-md group-hover:shadow-primary/10 transition-all duration-300 group-hover:scale-105">
                     <ScanSearch className="h-4.5 w-4.5 text-primary" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold truncate group-hover:text-primary/90 transition-colors">
+                    <p className="text-sm font-semibold text-foreground truncate group-hover:text-primary transition-colors">
                       {scan.connection.email}
                     </p>
-                    <p className="text-xs text-muted-foreground/70 mt-0.5">
+                    <p className="text-xs text-muted-foreground mt-0.5">
                       {scan.keywords.length > 0
                         ? scan.keywords.join(", ")
                         : "All keywords"}{" "}
@@ -101,22 +101,22 @@ export default async function ScansPage() {
                     const saved = included + excluded;
                     const filteredOut = (scan.processedCount ?? 0) - saved;
                     return (
-                      <span className="text-xs text-muted-foreground/80 flex items-center gap-1.5">
+                      <span className="text-xs text-muted-foreground flex items-center gap-1.5">
                         <span>{scan.totalMessages} scanned</span>
-                        <span className="text-muted-foreground/30">&middot;</span>
+                        <span className="text-border">&middot;</span>
                         {included > 0 && (
-                          <span className="text-secondary font-medium">{included} included</span>
+                          <span className="text-secondary font-semibold">{included} included</span>
                         )}
                         {excluded > 0 && (
                           <>
-                            {included > 0 && <span className="text-muted-foreground/30">&middot;</span>}
-                            <span className="text-accent font-medium">{excluded} for review</span>
+                            {included > 0 && <span className="text-border">&middot;</span>}
+                            <span className="text-accent font-semibold">{excluded} for review</span>
                           </>
                         )}
                         {filteredOut > 0 && (
                           <>
-                            <span className="text-muted-foreground/30">&middot;</span>
-                            <span className="text-muted-foreground/50">{filteredOut} filtered</span>
+                            <span className="text-border">&middot;</span>
+                            <span className="text-muted-foreground/60">{filteredOut} filtered</span>
                           </>
                         )}
                         {included === 0 && excluded === 0 && (
