@@ -25,35 +25,35 @@ export default async function SettingsPage() {
     <div className="space-y-8">
       <PageHeader title="Settings" description="Manage your account and workspace" />
 
-      <div className="space-y-4">
+      <div className="space-y-5 stagger-children">
         {/* Gmail Connections */}
-        <div className="rounded-xl border border-border bg-card overflow-hidden">
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 border border-border">
-              <Mail className="h-4 w-4 text-muted-foreground" />
+        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+          <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/8 border border-primary/12 shadow-sm shadow-primary/5">
+              <Mail className="h-4 w-4 text-primary" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">Gmail Connections</h3>
-              <p className="text-xs text-muted-foreground">
+              <h3 className="text-sm font-bold">Gmail Connections</h3>
+              <p className="text-xs text-muted-foreground/70">
                 Connected accounts used for scanning
               </p>
             </div>
           </div>
-          <div className="px-5 py-4">
+          <div className="px-6 py-5">
             {connections.length > 0 ? (
               <div className="space-y-3">
                 {connections.map((conn) => (
                   <div
                     key={conn.id}
-                    className="flex items-center justify-between py-2"
+                    className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-muted/15 transition-colors -mx-3"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/8 border border-primary/12 text-xs font-medium text-primary">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/5 border border-primary/12 text-xs font-bold text-primary">
                         {conn.email[0].toUpperCase()}
                       </div>
                       <div>
-                        <p className="text-sm font-medium">{conn.email}</p>
-                        <p className="text-xs text-muted-foreground">
+                        <p className="text-sm font-semibold">{conn.email}</p>
+                        <p className="text-xs text-muted-foreground/60">
                           {conn._count.scans} scans &middot; Connected{" "}
                           {new Date(conn.connectedAt).toLocaleDateString()}
                         </p>
@@ -76,7 +76,7 @@ export default async function SettingsPage() {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground/70">
                 No Gmail accounts connected. Sign out and sign in again with
                 Gmail to connect.
               </p>
@@ -85,23 +85,23 @@ export default async function SettingsPage() {
         </div>
 
         {/* Organization */}
-        <div className="rounded-xl border border-border bg-card overflow-hidden">
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 border border-border">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
+        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+          <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/8 border border-accent/12 shadow-sm shadow-accent/5">
+              <Building2 className="h-4 w-4 text-accent" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">Workspace</h3>
-              <p className="text-xs text-muted-foreground">
+              <h3 className="text-sm font-bold">Workspace</h3>
+              <p className="text-xs text-muted-foreground/70">
                 {org?.name}
               </p>
             </div>
           </div>
-          <div className="px-5 py-4">
+          <div className="px-6 py-5">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-muted-foreground">
-                  Plan: <span className="text-foreground font-medium">{org?.plan ?? "Free"}</span>
+                <p className="text-sm text-muted-foreground/70">
+                  Plan: <span className="text-foreground font-semibold">{org?.plan ?? "Free"}</span>
                 </p>
               </div>
               <Badge variant="outline">{org?.slug}</Badge>
@@ -110,34 +110,34 @@ export default async function SettingsPage() {
         </div>
 
         {/* Team */}
-        <div className="rounded-xl border border-border bg-card overflow-hidden">
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 border border-border">
-              <Users className="h-4 w-4 text-muted-foreground" />
+        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+          <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-secondary/8 border border-secondary/12 shadow-sm shadow-secondary/5">
+              <Users className="h-4 w-4 text-secondary" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">Team Members</h3>
-              <p className="text-xs text-muted-foreground">
+              <h3 className="text-sm font-bold">Team Members</h3>
+              <p className="text-xs text-muted-foreground/70">
                 {org?.members.length ?? 0} member(s)
               </p>
             </div>
           </div>
-          <div className="px-5 py-4">
-            <div className="space-y-3">
+          <div className="px-6 py-5">
+            <div className="space-y-2">
               {org?.members.map((member) => (
                 <div
                   key={member.id}
-                  className="flex items-center justify-between py-1"
+                  className="flex items-center justify-between py-2.5 px-3 rounded-xl hover:bg-muted/15 transition-colors -mx-3"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="h-7 w-7 rounded-full bg-muted border border-border flex items-center justify-center text-xs font-medium text-muted-foreground">
+                    <div className="h-8 w-8 rounded-xl bg-muted/40 border border-border/60 flex items-center justify-center text-xs font-bold text-muted-foreground">
                       {member.user.name?.[0]?.toUpperCase() ?? "?"}
                     </div>
                     <div>
-                      <p className="text-sm font-medium">
+                      <p className="text-sm font-semibold">
                         {member.user.name ?? member.user.email}
                       </p>
-                      <p className="text-xs text-muted-foreground">
+                      <p className="text-xs text-muted-foreground/60">
                         {member.user.email}
                       </p>
                     </div>
@@ -150,20 +150,20 @@ export default async function SettingsPage() {
         </div>
 
         {/* Security / Account */}
-        <div className="rounded-xl border border-border bg-card overflow-hidden">
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-border">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 border border-border">
+        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+          <div className="flex items-center gap-3.5 px-6 py-4 border-b border-border/40">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-muted/40 border border-border/60 shadow-sm">
               <Shield className="h-4 w-4 text-muted-foreground" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold">Account</h3>
-              <p className="text-xs text-muted-foreground">
+              <h3 className="text-sm font-bold">Account</h3>
+              <p className="text-xs text-muted-foreground/70">
                 Signed in as {session.user.email}
               </p>
             </div>
           </div>
-          <div className="px-5 py-4 flex items-center justify-between">
-            <p className="text-sm text-muted-foreground">
+          <div className="px-6 py-5 flex items-center justify-between">
+            <p className="text-sm text-muted-foreground/70">
               Read-only Gmail access. Only invoice metadata is stored.
             </p>
             <SignOutButton />

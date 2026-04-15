@@ -1,34 +1,47 @@
 @import "tailwindcss";
 
 @theme {
-  --color-background: #09090b;
-  --color-foreground: #fafafa;
-  --color-muted: #27272a;
-  --color-muted-foreground: #a1a1aa;
-  --color-card: #0c0c0f;
-  --color-card-foreground: #fafafa;
-  --color-border: #1e1e24;
-  --color-input: #27272a;
-  --color-ring: #5b8def;
-  --color-primary: #5b8def;
-  --color-primary-foreground: #071a38;
+  /* ─── Luminous Futuristic Palette ─── */
+  --color-background: #06080e;
+  --color-foreground: #f0f2f8;
+  --color-muted: #1a1d2e;
+  --color-muted-foreground: #8b8fa8;
+  --color-card: #0c0f1a;
+  --color-card-foreground: #f0f2f8;
+  --color-border: #1c2035;
+  --color-input: #1a1d2e;
+  --color-ring: #6c8cff;
+
+  /* Primary: vivid electric blue */
+  --color-primary: #6c8cff;
+  --color-primary-foreground: #040818;
+
+  /* Secondary: luminous emerald */
   --color-secondary: #34d399;
   --color-secondary-foreground: #022c22;
-  --color-accent: #e8a849;
-  --color-accent-foreground: #1c1c1c;
+
+  /* Accent: warm amber-gold */
+  --color-accent: #f0b254;
+  --color-accent-foreground: #1c1408;
+
+  /* Destructive: soft coral-red */
   --color-destructive: #f87171;
   --color-destructive-foreground: #fafafa;
-  --color-sidebar: #07080d;
-  --color-sidebar-foreground: #a1a1aa;
-  --color-sidebar-border: #141419;
-  --color-sidebar-accent: #12131a;
-  --color-sidebar-ring: #5b8def;
 
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* Sidebar: deep space */
+  --color-sidebar: #060810;
+  --color-sidebar-foreground: #8b8fa8;
+  --color-sidebar-border: #141728;
+  --color-sidebar-accent: #111426;
+  --color-sidebar-ring: #6c8cff;
 
+  /* Radius: rounder for premium feel */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Typography */
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
@@ -46,35 +59,146 @@
   }
 }
 
-/* Scrollbar */
+/* ─── Scrollbar ─── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border-radius: 3px;
+  background: #1c2035;
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
+  background: #2a2f4a;
 }
 
-/* Animations */
+/* ─── Animations ─── */
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
 @keyframes slide-in-left {
-  from { opacity: 0; transform: translateX(-12px); }
+  from { opacity: 0; transform: translateX(-16px); }
   to { opacity: 1; transform: translateX(0); }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+@keyframes float-up {
+  from { opacity: 0; transform: translateY(20px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .animate-in {
-  animation: fade-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: fade-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .animate-slide-in {
-  animation: slide-in-left 0.25s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: slide-in-left 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.animate-float-up {
+  animation: float-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.animate-scale-in {
+  animation: scale-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* ─── Staggered children ─── */
+.stagger-children > * {
+  animation: slide-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stagger-children > *:nth-child(1) { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2) { animation-delay: 50ms; }
+.stagger-children > *:nth-child(3) { animation-delay: 100ms; }
+.stagger-children > *:nth-child(4) { animation-delay: 150ms; }
+.stagger-children > *:nth-child(5) { animation-delay: 200ms; }
+.stagger-children > *:nth-child(6) { animation-delay: 250ms; }
+
+/* ─── Glass surfaces ─── */
+.glass {
+  background: rgba(12, 15, 26, 0.7);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgba(108, 140, 255, 0.08);
+}
+
+.glass-strong {
+  background: rgba(12, 15, 26, 0.85);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  border: 1px solid rgba(108, 140, 255, 0.12);
+}
+
+/* ─── Glow effects ─── */
+.glow-primary {
+  box-shadow: 0 0 20px -4px rgba(108, 140, 255, 0.15),
+              0 0 40px -8px rgba(108, 140, 255, 0.08);
+}
+
+.glow-secondary {
+  box-shadow: 0 0 20px -4px rgba(52, 211, 153, 0.15),
+              0 0 40px -8px rgba(52, 211, 153, 0.08);
+}
+
+/* ─── Shimmer loading ─── */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-muted) 25%,
+    rgba(108, 140, 255, 0.06) 50%,
+    var(--color-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+/* ─── Aurora gradient accents ─── */
+.aurora-bg {
+  background: radial-gradient(
+    ellipse at 20% 50%,
+    rgba(108, 140, 255, 0.06) 0%,
+    transparent 50%
+  ),
+  radial-gradient(
+    ellipse at 80% 20%,
+    rgba(52, 211, 153, 0.04) 0%,
+    transparent 50%
+  ),
+  radial-gradient(
+    ellipse at 60% 80%,
+    rgba(240, 178, 84, 0.03) 0%,
+    transparent 50%
+  );
+}
+
+/* ─── Premium progress bar ─── */
+.progress-bar {
+  background: linear-gradient(90deg, #6c8cff, #34d399);
+  background-size: 200% 100%;
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+/* ─── Focus ring ─── */
+.focus-ring {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+}
+.focus-ring:focus-visible {
+  outline-color: rgba(108, 140, 255, 0.5);
+  box-shadow: 0 0 0 4px rgba(108, 140, 255, 0.1);
 }

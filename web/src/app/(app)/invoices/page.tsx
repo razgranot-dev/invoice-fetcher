@@ -41,15 +41,11 @@ export default async function InvoicesPage({
     getScanListForFilter(organizationId),
   ]);
 
-  // ── Bug 1 fix: derive suppliers from actual invoice data ──────────
-  // Ensure every vendor in the current view has a supplier panel entry.
   const dbSupplierNames = new Set(dbSuppliers.map((s) => s.name.toLowerCase()));
   const extraSuppliers: typeof dbSuppliers = [];
 
   const invoiceBrandCounts = new Map<string, { displayName: string; count: number }>();
   for (const inv of allInvoices) {
-    // Prefer company name for grouping — it's the actual vendor.
-    // Handles PayPal receipts correctly (vendor = Shopify, not PayPal).
     const brand = inv.company?.trim().toLowerCase()
       || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     if (!brand) continue;
@@ -57,7 +53,6 @@ export default async function InvoicesPage({
     if (entry) {
       entry.count++;
     } else {
-      // Pick best display name: company field or capitalized brand
       const display = inv.company?.trim() || brand;
       invoiceBrandCounts.set(brand, { displayName: display, count: 1 });
     }
@@ -79,8 +74,6 @@ export default async function InvoicesPage({
 
   const allSuppliers = [...dbSuppliers, ...extraSuppliers];
 
-  // ── Bug 2 fix: filter invoices by supplier relevance ──────────────
-  // Build set of excluded brand names from supplier panel state
   const excludedBrands = new Set(
     allSuppliers
       .filter((s) => !s.isRelevant)
@@ -90,7 +83,6 @@ export default async function InvoicesPage({
   const visibleInvoices =
     excludedBrands.size > 0
       ? allInvoices.filter((inv) => {
-          // Must match the same brand logic as the grouping above
           const brand = inv.company?.trim().toLowerCase()
             || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
           if (brand && excludedBrands.has(brand)) return false;
@@ -98,7 +90,6 @@ export default async function InvoicesPage({
         })
       : allInvoices;
 
-  // Exports always use INCLUDED only
   const exportQuery = new URLSearchParams();
   if (params.search) exportQuery.set("search", params.search);
   if (params.tier) exportQuery.set("tier", params.tier);
@@ -107,7 +98,6 @@ export default async function InvoicesPage({
   exportQuery.set("reportStatus", "INCLUDED");
   const exportUrl = `/api/invoices/export?${exportQuery.toString()}`;
 
-  // Serialize dates for client component
   const serialized = visibleInvoices.map((inv) => ({
     id: inv.id,
     company: inv.company,
@@ -122,7 +112,6 @@ export default async function InvoicesPage({
     reportStatus: inv.reportStatus,
   }));
 
-  // ── Count from visible invoices only ───────────────────────────────
   const includedCount = visibleInvoices.filter(
     (inv) => inv.reportStatus === "INCLUDED"
   ).length;

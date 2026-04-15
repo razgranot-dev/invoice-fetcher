@@ -50,7 +50,7 @@ export default async function ScanDetailPage({
       <div className="flex items-center gap-3">
         <Link
           href="/scans"
-          className="flex h-8 w-8 items-center justify-center rounded-lg border border-border hover:bg-muted/50 transition-colors"
+          className="flex h-9 w-9 items-center justify-center rounded-xl border border-border/60 hover:bg-muted/30 hover:border-primary/20 transition-all duration-200"
         >
           <ArrowLeft className="h-4 w-4" />
         </Link>
@@ -63,44 +63,42 @@ export default async function ScanDetailPage({
 
       {/* Live progress for running scans */}
       {(scan.status === "RUNNING" || scan.status === "PENDING") && (
-        <div className="rounded-xl border border-border bg-card p-5">
-          <ScanProgress scanId={scan.id} />
-        </div>
+        <ScanProgress scanId={scan.id} />
       )}
 
       {/* Scan metadata */}
-      <div className="rounded-xl border border-border bg-card p-5">
+      <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm p-6 shadow-lg shadow-black/5">
         {(() => {
           const includedCount = scan.invoices.filter((i) => i.reportStatus === "INCLUDED").length;
           const reviewCount = scan.invoices.filter((i) => i.reportStatus === "EXCLUDED").length;
           const filteredOut = (scan.processedCount ?? 0) - scan.invoices.length;
           return (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 text-sm">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-5 text-sm">
               <div>
-                <p className="text-xs text-muted-foreground">Account</p>
-                <p className="font-medium mt-0.5">{scan.connection.email}</p>
+                <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">Account</p>
+                <p className="font-semibold mt-1">{scan.connection.email}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Emails scanned</p>
-                <p className="font-medium mt-0.5">{scan.totalMessages}</p>
+                <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">Emails scanned</p>
+                <p className="font-semibold mt-1">{scan.totalMessages}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Included</p>
-                <p className="font-medium mt-0.5 text-emerald-600">{includedCount}</p>
+                <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">Included</p>
+                <p className="font-semibold mt-1 text-secondary">{includedCount}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">For review</p>
-                <p className="font-medium mt-0.5 text-amber-600">{reviewCount}</p>
+                <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">For review</p>
+                <p className="font-semibold mt-1 text-accent">{reviewCount}</p>
               </div>
               {filteredOut > 0 && (
                 <div>
-                  <p className="text-xs text-muted-foreground">Filtered out</p>
-                  <p className="font-medium mt-0.5 text-muted-foreground">{filteredOut}</p>
+                  <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">Filtered out</p>
+                  <p className="font-semibold mt-1 text-muted-foreground/50">{filteredOut}</p>
                 </div>
               )}
               <div>
-                <p className="text-xs text-muted-foreground">Date</p>
-                <p className="font-medium mt-0.5">
+                <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">Date</p>
+                <p className="font-semibold mt-1">
                   <LocalTime
                     date={scan.createdAt}
                     format={{ month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }}
@@ -112,7 +110,7 @@ export default async function ScanDetailPage({
         })()}
 
         {scan.errorMessage && (
-          <div className="mt-4 rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2 text-sm text-destructive">
+          <div className="mt-5 rounded-xl bg-destructive/8 border border-destructive/15 px-4 py-3 text-sm text-destructive">
             {scan.errorMessage}
           </div>
         )}
@@ -120,9 +118,9 @@ export default async function ScanDetailPage({
 
       {/* Invoice results */}
       {scan.invoices.length > 0 ? (
-        <div className="rounded-xl border border-border bg-card overflow-hidden">
-          <div className="px-5 py-3 border-b border-border">
-            <h2 className="text-sm font-semibold">
+        <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
+          <div className="px-6 py-4 border-b border-border/40">
+            <h2 className="text-sm font-bold">
               {scan.invoices.length} Result{scan.invoices.length !== 1 ? "s" : ""} Saved
               {(() => {
                 const inc = scan.invoices.filter((i) => i.reportStatus === "INCLUDED").length;
@@ -131,18 +129,17 @@ export default async function ScanDetailPage({
                 if (inc > 0) parts.push(`${inc} included`);
                 if (exc > 0) parts.push(`${exc} for review`);
                 return parts.length > 0 ? (
-                  <span className="font-normal text-muted-foreground">
+                  <span className="font-normal text-muted-foreground/60">
                     {" "}&mdash; {parts.join(", ")}
                   </span>
                 ) : null;
               })()}
             </h2>
           </div>
-          <div className="divide-y divide-border">
+          <div className="divide-y divide-border/30">
             {scan.invoices.map((inv) => {
               const badge = tierBadge[inv.classificationTier] ?? tierBadge.not_invoice;
               const isExcluded = inv.reportStatus === "EXCLUDED";
-              // Derive review reason for borderline items
               let reviewTag = "";
               if (isExcluded) {
                 if (inv.classificationTier === "possible_financial_email") {
@@ -156,19 +153,19 @@ export default async function ScanDetailPage({
               return (
                 <div
                   key={inv.id}
-                  className={`flex items-center justify-between px-5 py-3 transition-colors ${
-                    isExcluded ? "bg-muted/10 opacity-70" : "hover:bg-muted/20"
+                  className={`flex items-center justify-between px-6 py-3.5 transition-all duration-200 ${
+                    isExcluded ? "bg-muted/5 opacity-50" : "hover:bg-muted/10"
                   }`}
                 >
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted/50 border border-border shrink-0">
-                      <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+                  <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-muted/30 border border-border/40 shrink-0">
+                      <FileText className="h-4 w-4 text-muted-foreground/60" />
                     </div>
                     <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">
+                      <p className="text-sm font-semibold truncate">
                         {inv.company ?? inv.subject}
                       </p>
-                      <p className="text-xs text-muted-foreground truncate mt-0.5">
+                      <p className="text-xs text-muted-foreground/60 truncate mt-0.5">
                         {inv.sender}
                         {inv.date && (
                           <>
@@ -181,18 +178,18 @@ export default async function ScanDetailPage({
                   </div>
                   <div className="flex items-center gap-2 ml-4 shrink-0">
                     {inv.amount != null && (
-                      <span className="text-sm font-mono tabular-nums">
+                      <span className="text-sm font-mono font-semibold tabular-nums">
                         {formatCurrency(inv.amount, inv.currency)}
                       </span>
                     )}
                     {reviewTag && (
-                      <span className="text-[10px] font-medium text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400 px-1.5 py-0.5 rounded">
+                      <span className="text-[10px] font-semibold text-accent bg-accent/10 border border-accent/15 px-1.5 py-0.5 rounded-md">
                         {reviewTag}
                       </span>
                     )}
                     <Badge variant={badge.variant}>{badge.label}</Badge>
                     {isExcluded && (
-                      <span className="text-[10px] text-muted-foreground">Needs review</span>
+                      <span className="text-[10px] text-muted-foreground/50 font-medium">Needs review</span>
                     )}
                   </div>
                 </div>
@@ -202,11 +199,11 @@ export default async function ScanDetailPage({
         </div>
       ) : (
         scan.status === "COMPLETED" && (
-          <div className="text-center py-12 text-sm text-muted-foreground">
+          <div className="text-center py-14 text-sm text-muted-foreground/60 animate-float-up">
             {(scan.processedCount ?? 0) > 0 ? (
               <>
-                <p>No invoices met the inclusion threshold.</p>
-                <p className="mt-1 text-xs">
+                <p className="font-medium">No invoices met the inclusion threshold.</p>
+                <p className="mt-1.5 text-xs">
                   {scan.processedCount} candidate{(scan.processedCount ?? 0) !== 1 ? "s" : ""} were
                   evaluated from {scan.totalMessages} emails but all were filtered out.
                 </p>

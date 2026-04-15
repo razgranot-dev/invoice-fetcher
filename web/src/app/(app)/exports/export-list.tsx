@@ -75,8 +75,6 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
       return;
     }
 
-    // Use adaptive polling: 1.5s when exports are actively processing,
-    // but stop entirely when nothing is active (hasActive guard above).
     intervalRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/exports?t=${Date.now()}`, {
@@ -95,7 +93,6 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
     };
   }, [hasActive]);
 
-  // Also update from initial when it changes (page re-navigations)
   useEffect(() => {
     setExports(initial);
   }, [initial]);
@@ -125,7 +122,7 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
   };
 
   return (
-    <div className="rounded-xl border border-border bg-card divide-y divide-border">
+    <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm divide-y divide-border/40 overflow-hidden shadow-lg shadow-black/5">
       {exports.map((exp) => {
         const Icon =
           formatIcon[exp.format as keyof typeof formatIcon] || Download;
@@ -137,17 +134,17 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
         return (
           <div
             key={exp.id}
-            className="flex items-center justify-between px-5 py-4 hover:bg-muted/20 transition-colors"
+            className="flex items-center justify-between px-6 py-4.5 hover:bg-muted/10 transition-all duration-200 group"
           >
             <div className="flex items-center gap-4 min-w-0">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary/8 border border-secondary/12 shrink-0">
-                <Icon className="h-4 w-4 text-secondary" />
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-secondary/8 border border-secondary/12 shrink-0 shadow-sm shadow-secondary/5 group-hover:shadow-md group-hover:shadow-secondary/10 transition-shadow duration-200">
+                <Icon className="h-4.5 w-4.5 text-secondary" />
               </div>
               <div className="min-w-0">
-                <p className="text-sm font-medium">
+                <p className="text-sm font-semibold">
                   {formatLabel[exp.format] ?? exp.format} Export
                 </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
+                <p className="text-xs text-muted-foreground/70 mt-0.5">
                   {exp.invoiceCount} invoices &middot;{" "}
                   {new Date(exp.createdAt).toLocaleDateString("en-US", {
                     month: "short",
@@ -158,40 +155,36 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
                   {exp.fileSize ? ` \u00b7 ${formatBytes(exp.fileSize)}` : ""}
                 </p>
 
-                {/* Live progress bar for active exports */}
                 {isCancellable && (
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <div className="h-1.5 flex-1 max-w-[220px] rounded-full bg-muted overflow-hidden">
+                  <div className="flex items-center gap-2.5 mt-2">
+                    <div className="h-2 flex-1 max-w-[240px] rounded-full bg-muted/40 overflow-hidden">
                       <div
-                        className="h-full rounded-full bg-blue-500 transition-all duration-500"
+                        className="h-full rounded-full progress-bar transition-all duration-700"
                         style={{ width: `${pct}%` }}
                       />
                     </div>
-                    <span className="text-xs font-bold tabular-nums text-blue-600 dark:text-blue-400 shrink-0">
+                    <span className="text-xs font-bold tabular-nums text-primary shrink-0">
                       {pct}%
                     </span>
                   </div>
                 )}
 
-                {/* Progress message for active exports */}
                 {isCancellable && exp.progressMessage && (
-                  <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-sm">
+                  <p className="text-xs text-muted-foreground/60 mt-1 truncate max-w-sm">
                     {exp.progressMessage}
                   </p>
                 )}
 
-                {/* Completion message with warnings */}
                 {exp.status === "COMPLETED" &&
                   exp.progressMessage &&
                   exp.progressMessage !== "Complete" && (
-                    <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 max-w-md">
+                    <p className="text-xs text-accent mt-1 max-w-md">
                       {exp.progressMessage}
                     </p>
                   )}
 
-                {/* Error message */}
                 {exp.status === "FAILED" && exp.errorMessage && (
-                  <p className="text-xs text-destructive mt-0.5 truncate max-w-xs">
+                  <p className="text-xs text-destructive mt-1 truncate max-w-xs">
                     {exp.errorMessage}
                   </p>
                 )}
@@ -200,7 +193,7 @@ export function ExportList({ initial }: { initial: ExportItem[] }) {
 
             <div className="flex items-center gap-3 shrink-0 ml-4">
               {exp.status === "COMPLETED" && (
-                <Button variant="outline" size="sm" asChild>
+                <Button variant="glow" size="sm" asChild>
                   <a href={`/api/exports/${exp.id}/download`}>
                     <Download className="h-3.5 w-3.5" />
                     Download

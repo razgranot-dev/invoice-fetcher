@@ -9,7 +9,6 @@ import { ExportList } from "./export-list";
 
 export default async function ExportsPage() {
   const { organizationId } = await requireOrganization();
-  // Recover any exports stuck in PROCESSING for 15+ minutes before loading
   await recoverStuckExports(organizationId);
   const exports = await getExports(organizationId);
 

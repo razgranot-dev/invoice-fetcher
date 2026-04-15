@@ -2,7 +2,7 @@
 
 import { signIn } from "next-auth/react";
 import { useSearchParams } from "next/navigation";
-import { Receipt } from "lucide-react";
+import { Receipt, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Suspense } from "react";
 
@@ -12,22 +12,25 @@ function LoginForm() {
   const error = searchParams.get("error");
 
   return (
-    <div className="w-full max-w-sm animate-in">
+    <div className="w-full max-w-sm animate-float-up">
       <div className="flex flex-col items-center text-center mb-8">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 border border-primary/20 mb-4">
-          <Receipt className="h-6 w-6 text-primary" />
+        <div className="relative mb-5">
+          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 shadow-xl shadow-primary/15">
+            <Receipt className="h-7 w-7 text-primary" />
+          </div>
+          <div className="absolute -inset-3 rounded-3xl bg-primary/8 blur-xl -z-10" />
         </div>
-        <h1 className="text-xl font-semibold tracking-tight">
+        <h1 className="text-2xl font-bold tracking-tight">
           Invoice Fetcher
         </h1>
-        <p className="text-sm text-muted-foreground mt-1">
+        <p className="text-sm text-muted-foreground/70 mt-1.5">
           Automated invoice detection from your inbox
         </p>
       </div>
 
-      <div className="rounded-xl border border-border bg-card p-6">
+      <div className="rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm p-7 shadow-2xl shadow-black/20">
         {error && (
-          <div className="mb-4 rounded-lg bg-destructive/10 border border-destructive/20 px-3 py-2 text-sm text-destructive">
+          <div className="mb-5 rounded-xl bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive">
             {error === "OAuthAccountNotLinked"
               ? "This email is already linked to another account."
               : "Authentication failed. Please try again."}
@@ -35,11 +38,12 @@ function LoginForm() {
         )}
 
         <Button
-          className="w-full h-11 text-sm"
+          className="w-full h-12 text-sm font-semibold"
+          variant="glow"
           size="lg"
           onClick={() => signIn("google", { callbackUrl })}
         >
-          <svg className="h-4 w-4 mr-2" viewBox="0 0 24 24">
+          <svg className="h-4.5 w-4.5 mr-2" viewBox="0 0 24 24">
             <path
               fill="currentColor"
               d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"
@@ -60,7 +64,7 @@ function LoginForm() {
           Continue with Google
         </Button>
 
-        <p className="text-[11px] text-muted-foreground text-center mt-4 leading-relaxed">
+        <p className="text-[11px] text-muted-foreground/50 text-center mt-5 leading-relaxed">
           We request read-only access to detect invoices.
           <br />
           No emails are stored — only invoice metadata.

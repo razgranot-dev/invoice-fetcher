@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search, Filter, X } from "lucide-react";
+import { Search, Filter, X, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState, useCallback } from "react";
 
@@ -63,15 +63,15 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
       <div className="flex flex-col sm:flex-row gap-3">
         <form
           onSubmit={handleSearch}
-          className="flex items-center gap-2 flex-1 rounded-lg border border-border bg-card px-3 py-2 text-sm"
+          className="flex items-center gap-2.5 flex-1 rounded-xl border border-border/60 bg-muted/15 px-4 py-2.5 text-sm transition-all duration-200 focus-within:border-primary/25 focus-within:bg-muted/25 focus-within:shadow-md focus-within:shadow-primary/5 group"
         >
-          <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <Search className="h-4 w-4 text-muted-foreground/50 shrink-0 group-focus-within:text-primary/60 transition-colors" />
           <input
             type="text"
             placeholder="Search by company, subject, sender..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="bg-transparent outline-none text-sm w-full placeholder:text-muted-foreground"
+            className="bg-transparent outline-none text-sm w-full placeholder:text-muted-foreground/40"
           />
           {search && (
             <button
@@ -80,21 +80,20 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
                 setSearch("");
                 updateParams({ search: null });
               }}
-              className="text-muted-foreground hover:text-foreground"
+              className="text-muted-foreground/50 hover:text-foreground transition-colors"
             >
               <X className="h-3.5 w-3.5" />
             </button>
           )}
         </form>
 
-        {/* Scan selector — always visible */}
         {scans.length > 0 && (
           <select
             value={currentScan}
             onChange={(e) =>
               updateParams({ scan: e.target.value || null })
             }
-            className="rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none min-w-[180px]"
+            className="rounded-xl border border-border/60 bg-muted/15 px-4 py-2.5 text-sm outline-none min-w-[180px] transition-all duration-200 focus:border-primary/25 focus:shadow-md focus:shadow-primary/5"
           >
             <option value="">All scans</option>
             {scans.map((s) => {
@@ -114,17 +113,18 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
             variant="outline"
             size="sm"
             onClick={() => setShowFilters(!showFilters)}
+            className={showFilters ? "border-primary/30 bg-primary/5" : ""}
           >
-            <Filter className="h-3.5 w-3.5" />
+            <SlidersHorizontal className="h-3.5 w-3.5" />
             Filters
             {hasFilters && (
-              <span className="ml-1 h-4 w-4 rounded-full bg-primary text-[10px] text-primary-foreground flex items-center justify-center">
+              <span className="ml-1.5 h-5 w-5 rounded-full bg-primary text-[10px] font-bold text-primary-foreground flex items-center justify-center shadow-sm shadow-primary/20">
                 !
               </span>
             )}
           </Button>
           {hasFilters && (
-            <Button variant="ghost" size="sm" onClick={clearAll}>
+            <Button variant="ghost" size="sm" onClick={clearAll} className="text-muted-foreground">
               Clear
             </Button>
           )}
@@ -132,10 +132,10 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
       </div>
 
       {showFilters && (
-        <div className="rounded-lg border border-border bg-card p-4 flex flex-wrap gap-4 animate-in">
+        <div className="rounded-2xl border border-border/60 bg-card/60 backdrop-blur-sm p-5 flex flex-wrap gap-5 animate-scale-in">
           {/* Report inclusion filter */}
           <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground/70 tracking-wider uppercase block mb-2">
               Report
             </label>
             <div className="flex gap-1.5 flex-wrap">
@@ -147,10 +147,10 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
                 <button
                   key={opt.value}
                   onClick={() => updateParams({ report: opt.value || null })}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
                     currentReport === opt.value
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                      ? "bg-primary/15 text-primary border border-primary/20 shadow-sm shadow-primary/5"
+                      : "bg-muted/30 text-muted-foreground/70 hover:bg-muted/50 hover:text-foreground border border-transparent"
                   }`}
                 >
                   {opt.label}
@@ -161,7 +161,7 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
 
           {/* Tier filter */}
           <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1.5">
+            <label className="text-[11px] font-semibold text-muted-foreground/70 tracking-wider uppercase block mb-2">
               Classification
             </label>
             <div className="flex gap-1.5 flex-wrap">
@@ -175,10 +175,10 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
                 <button
                   key={opt.value}
                   onClick={() => updateParams({ tier: opt.value || null })}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200 ${
                     (currentTier ?? "") === opt.value
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted/50 text-muted-foreground hover:bg-muted"
+                      ? "bg-primary/15 text-primary border border-primary/20 shadow-sm shadow-primary/5"
+                      : "bg-muted/30 text-muted-foreground/70 hover:bg-muted/50 hover:text-foreground border border-transparent"
                   }`}
                 >
                   {opt.label}
@@ -190,7 +190,7 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
           {/* Company filter */}
           {companies.length > 0 && (
             <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1.5">
+              <label className="text-[11px] font-semibold text-muted-foreground/70 tracking-wider uppercase block mb-2">
                 Company
               </label>
               <select
@@ -198,7 +198,7 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
                 onChange={(e) =>
                   updateParams({ company: e.target.value || null })
                 }
-                className="rounded-md border border-border bg-muted/30 px-2.5 py-1 text-xs outline-none"
+                className="rounded-lg border border-border/60 bg-muted/20 px-3 py-1.5 text-xs outline-none transition-all duration-200 focus:border-primary/25"
               >
                 <option value="">All companies</option>
                 {companies.map((c) => (

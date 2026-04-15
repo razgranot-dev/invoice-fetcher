@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, Building2 } from "lucide-react";
+import { Check, Building2, Sparkles } from "lucide-react";
 import { cleanDomainName } from "@/lib/utils";
 
 interface Supplier {
@@ -22,8 +22,6 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
   const [, startTransition] = useTransition();
   const [suppliers, setSuppliers] = useState(initial);
 
-  // Sync suppliers state when the `initial` prop changes
-  // (e.g. after router.refresh() re-fetches server data)
   useEffect(() => {
     setSuppliers(initial);
   }, [initial]);
@@ -31,7 +29,6 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
   const reportFilter = searchParams.get("report") ?? "";
 
   const toggle = async (name: string, current: boolean) => {
-    // Optimistic UI
     setSuppliers((prev) =>
       prev.map((s) =>
         s.name === name ? { ...s, isRelevant: !current } : s
@@ -62,28 +59,28 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
   const includedInvoices = included.reduce((n, s) => n + s.invoiceCount, 0);
 
   return (
-    <div className="rounded-xl border-2 border-emerald-500/30 bg-card p-5 space-y-4">
+    <div className="rounded-2xl border border-secondary/20 bg-gradient-to-br from-secondary/5 via-card/80 to-card/80 backdrop-blur-sm p-5 space-y-4 shadow-lg shadow-secondary/5">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/10">
-              <Building2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-secondary/12 border border-secondary/20 shadow-sm shadow-secondary/5">
+              <Building2 className="h-4 w-4 text-secondary" />
             </div>
             <span className="text-sm font-bold text-foreground">
-              Suppliers included in the export report
+              Suppliers included in export
             </span>
           </div>
-          <span className="text-xs text-muted-foreground ml-9">
+          <span className="text-xs text-muted-foreground/70 ml-[42px]">
             {suppliers.length === 0
               ? "Run a scan to detect suppliers automatically."
-              : `Only suppliers marked as included will appear in the export report. ${included.length} included (${includedInvoices} invoices)${excluded.length > 0 ? ` \u00b7 ${excluded.length} excluded` : ""}`}
+              : `${included.length} included (${includedInvoices} invoices)${excluded.length > 0 ? ` \u00b7 ${excluded.length} excluded` : ""}`}
           </span>
         </div>
 
         {/* Filter toggle */}
         {suppliers.length > 0 && (
-          <div className="flex gap-0.5 bg-muted/50 rounded-lg p-0.5">
+          <div className="flex gap-0.5 bg-muted/30 rounded-xl p-1 border border-border/40">
             {[
               { key: "", label: "All" },
               { key: "INCLUDED", label: "In Report" },
@@ -92,10 +89,10 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
               <button
                 key={opt.key}
                 onClick={() => setReportFilter(opt.key)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-200 ${
                   reportFilter === opt.key
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
+                    ? "bg-card text-foreground shadow-md border border-border/60"
+                    : "text-muted-foreground/60 hover:text-foreground"
                 }`}
               >
                 {opt.label}
@@ -116,21 +113,20 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
                 onClick={() => toggle(s.name, s.isRelevant)}
                 title={
                   s.isRelevant
-                    ? `${displayName} (${s.name}): in report \u2014 click to exclude`
-                    : `${displayName} (${s.name}): excluded \u2014 click to include`
+                    ? `${displayName}: in report — click to exclude`
+                    : `${displayName}: excluded — click to include`
                 }
-                className={`group flex items-center gap-2 pl-2.5 pr-3.5 py-2 rounded-lg text-sm font-medium transition-all border-2 ${
+                className={`group flex items-center gap-2 pl-2.5 pr-3.5 py-2 rounded-xl text-sm font-medium transition-all duration-200 border ${
                   s.isRelevant
-                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-800 hover:bg-emerald-500/20 hover:border-emerald-500/50 dark:text-emerald-300"
-                    : "bg-muted/20 border-muted-foreground/15 text-muted-foreground/70 hover:bg-muted/40 hover:border-muted-foreground/30"
+                    ? "bg-secondary/8 border-secondary/25 text-secondary hover:bg-secondary/15 hover:border-secondary/40 hover:shadow-md hover:shadow-secondary/10"
+                    : "bg-muted/15 border-border/40 text-muted-foreground/50 hover:bg-muted/30 hover:border-border/60 hover:text-muted-foreground/70"
                 }`}
               >
-                {/* Checkbox */}
                 <span
-                  className={`flex h-5 w-5 items-center justify-center rounded transition-colors shrink-0 ${
+                  className={`flex h-5 w-5 items-center justify-center rounded-md transition-all duration-200 shrink-0 ${
                     s.isRelevant
-                      ? "bg-emerald-600 border-2 border-emerald-600"
-                      : "border-2 border-muted-foreground/30 bg-transparent group-hover:border-muted-foreground/50"
+                      ? "bg-secondary border border-secondary shadow-sm shadow-secondary/20"
+                      : "border border-muted-foreground/25 bg-transparent group-hover:border-muted-foreground/40"
                   }`}
                 >
                   {s.isRelevant && (
@@ -138,23 +134,21 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
                   )}
                 </span>
 
-                {/* Name */}
                 <span
                   className={
                     s.isRelevant
                       ? "font-semibold"
-                      : "line-through decoration-muted-foreground/40"
+                      : "line-through decoration-muted-foreground/30"
                   }
                 >
                   {displayName}
                 </span>
 
-                {/* Invoice count badge */}
                 <span
-                  className={`ml-0.5 text-xs tabular-nums px-1.5 py-0.5 rounded-full ${
+                  className={`ml-0.5 text-[11px] font-bold tabular-nums px-1.5 py-0.5 rounded-md ${
                     s.isRelevant
-                      ? "bg-emerald-600/15 text-emerald-700 dark:text-emerald-400"
-                      : "bg-muted/50 text-muted-foreground/50"
+                      ? "bg-secondary/15 text-secondary"
+                      : "bg-muted/30 text-muted-foreground/40"
                   }`}
                 >
                   {s.invoiceCount}

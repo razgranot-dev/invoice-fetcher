@@ -36,7 +36,6 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
   const searchParams = useSearchParams();
   const [invoicesHref, setInvoicesHref] = useState("/invoices");
 
-  // On mount, restore saved invoice URL from localStorage
   useEffect(() => {
     try {
       const saved = localStorage.getItem(FILTER_STORAGE_KEY);
@@ -44,14 +43,12 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
     } catch {}
   }, []);
 
-  // When on /invoices, persist current filter params and keep href in sync
   useEffect(() => {
     if (!pathname.startsWith("/invoices")) return;
     const qs = searchParams.toString();
     if (qs) {
       try { localStorage.setItem(FILTER_STORAGE_KEY, qs); } catch {}
     }
-    // Always sync href; never clear localStorage — only "Clear" button resets.
     setInvoicesHref(qs ? `/invoices?${qs}` : "/invoices");
   }, [pathname, searchParams]);
 
@@ -61,30 +58,30 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
     <>
       {/* Backdrop */}
       <div
-        className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"
+        className="fixed inset-0 z-40 bg-black/70 backdrop-blur-md lg:hidden"
         onClick={onClose}
       />
 
       {/* Panel */}
-      <div className="fixed inset-y-0 left-0 z-50 w-72 bg-sidebar border-r border-sidebar-border lg:hidden animate-slide-in">
-        <div className="flex h-14 items-center justify-between px-4 border-b border-sidebar-border">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
-              <Receipt className="h-4 w-4 text-primary" />
+      <div className="fixed inset-y-0 left-0 z-50 w-[280px] bg-sidebar border-r border-sidebar-border lg:hidden animate-slide-in shadow-2xl shadow-black/40">
+        <div className="flex h-16 items-center justify-between px-4 border-b border-sidebar-border">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 shadow-lg shadow-primary/10">
+              <Receipt className="h-4.5 w-4.5 text-primary" />
             </div>
-            <span className="text-sm font-semibold tracking-tight text-foreground">
+            <span className="text-sm font-bold tracking-tight text-foreground">
               Invoice Fetcher
             </span>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-md hover:bg-sidebar-accent transition-colors"
+            className="p-2 rounded-xl hover:bg-sidebar-accent transition-colors"
           >
             <X className="h-4 w-4 text-muted-foreground" />
           </button>
         </div>
 
-        <nav className="space-y-0.5 px-2 pt-3">
+        <nav className="space-y-1 px-3 pt-4">
           {navigation.map((item) => {
             const isActive = pathname.startsWith(item.href);
             const href = item.href === "/invoices" ? invoicesHref : item.href;
@@ -107,15 +104,15 @@ export function MobileNav({ open, onClose }: MobileNavProps) {
                     : onClose
                 }
                 className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] font-medium transition-colors",
+                  "flex items-center gap-3 rounded-xl px-3 py-3 text-[13px] font-medium transition-all duration-200",
                   isActive
-                    ? "bg-sidebar-accent text-foreground"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-foreground"
+                    ? "bg-primary/10 text-foreground border border-primary/15"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-foreground border border-transparent"
                 )}
               >
                 <item.icon
                   className={cn(
-                    "h-4 w-4 shrink-0",
+                    "h-[18px] w-[18px] shrink-0",
                     isActive ? "text-primary" : "text-muted-foreground"
                   )}
                 />

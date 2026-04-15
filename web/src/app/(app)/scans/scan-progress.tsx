@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 
 interface ScanProgressProps {
   scanId: string;
-  /** Compact mode for scan list rows, expanded mode for detail page */
   compact?: boolean;
 }
 
@@ -97,14 +96,14 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
 
   if (compact) {
     return (
-      <div className="flex items-center gap-2 text-xs">
-        <div className="w-20 h-1.5 rounded-full bg-muted overflow-hidden">
+      <div className="flex items-center gap-2.5 text-xs">
+        <div className="w-24 h-2 rounded-full bg-muted/60 overflow-hidden">
           <div
-            className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
+            className="h-full rounded-full progress-bar transition-all duration-700 ease-out"
             style={{ width: `${pct}%` }}
           />
         </div>
-        <span className="text-muted-foreground tabular-nums">{pct}%</span>
+        <span className="text-muted-foreground tabular-nums font-medium">{pct}%</span>
         <button
           onClick={(e) => {
             e.preventDefault();
@@ -112,7 +111,7 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
             handleCancel();
           }}
           disabled={cancelling}
-          className="text-muted-foreground/50 hover:text-destructive transition-colors"
+          className="text-muted-foreground/40 hover:text-destructive transition-colors duration-200"
           title="Cancel scan"
         >
           <XCircle className="h-3.5 w-3.5" />
@@ -122,23 +121,28 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4 p-5 rounded-2xl border border-primary/15 bg-primary/5">
       <div className="flex items-center gap-3">
-        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-        <span className="text-sm font-medium">Scanning inbox...</span>
-        <span className="text-sm tabular-nums text-muted-foreground ml-auto">
+        <div className="relative">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          <div className="absolute inset-0 animate-ping opacity-20">
+            <Loader2 className="h-5 w-5 text-primary" />
+          </div>
+        </div>
+        <span className="text-sm font-semibold">Scanning inbox...</span>
+        <span className="text-sm tabular-nums font-bold text-primary ml-auto">
           {pct}%
         </span>
       </div>
-      <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
+      <div className="w-full h-2.5 rounded-full bg-muted/40 overflow-hidden">
         <div
-          className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
+          className="h-full rounded-full progress-bar transition-all duration-700 ease-out"
           style={{ width: `${pct}%` }}
         />
       </div>
       <div className="flex items-center justify-between">
         {data.progressMessage && (
-          <p className="text-xs text-muted-foreground">{data.progressMessage}</p>
+          <p className="text-xs text-muted-foreground/80">{data.progressMessage}</p>
         )}
         <Button
           variant="ghost"

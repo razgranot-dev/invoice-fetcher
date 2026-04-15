@@ -56,7 +56,6 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
     Object.fromEntries(invoices.map((inv) => [inv.id, inv.reportStatus]))
   );
 
-  // Sync statuses when invoices prop changes (e.g. after router.refresh())
   useEffect(() => {
     setStatuses(Object.fromEntries(invoices.map((inv) => [inv.id, inv.reportStatus])));
     setSelected(new Set());
@@ -87,7 +86,6 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
     ids: string[],
     status: "INCLUDED" | "EXCLUDED"
   ) => {
-    // Optimistic UI
     setStatuses((prev) => {
       const next = { ...prev };
       for (const id of ids) next[id] = status;
@@ -114,19 +112,19 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
   return (
     <>
       {/* Desktop table */}
-      <div className="hidden md:block rounded-xl border border-border bg-card overflow-hidden">
+      <div className="hidden md:block rounded-2xl border border-border/60 bg-card/80 backdrop-blur-sm overflow-hidden shadow-lg shadow-black/5">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border bg-muted/30">
-              <th className="w-10 px-3 py-3">
+            <tr className="border-b border-border/50 bg-muted/20">
+              <th className="w-10 px-3 py-3.5">
                 <button
                   onClick={toggleAll}
-                  className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${
+                  className={`flex h-4.5 w-4.5 items-center justify-center rounded-md border transition-all duration-200 ${
                     allSelected
-                      ? "bg-primary border-primary"
+                      ? "bg-primary border-primary shadow-sm shadow-primary/20"
                       : someSelected
-                        ? "bg-primary/50 border-primary"
-                        : "border-muted-foreground/30 hover:border-muted-foreground/60"
+                        ? "bg-primary/50 border-primary shadow-sm shadow-primary/10"
+                        : "border-muted-foreground/20 hover:border-muted-foreground/40"
                   }`}
                 >
                   {allSelected && (
@@ -137,27 +135,27 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                   )}
                 </button>
               </th>
-              <th className="w-10 px-2 py-3 text-xs font-medium text-muted-foreground">
+              <th className="w-10 px-2 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
                 Report
               </th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">
+              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
                 Company
               </th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">
+              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
                 Subject
               </th>
-              <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground">
+              <th className="text-right px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
                 Amount
               </th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">
+              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
                 Date
               </th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground">
+              <th className="text-left px-4 py-3.5 text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">
                 Status
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
+          <tbody className="divide-y divide-border/30">
             {invoices.map((inv) => {
               const badge =
                 tierBadge[inv.classificationTier] ?? tierBadge.not_invoice;
@@ -168,19 +166,19 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
               return (
                 <tr
                   key={inv.id}
-                  className={`transition-colors ${
+                  className={`transition-all duration-200 ${
                     isExcluded
-                      ? "bg-muted/10 opacity-60"
-                      : "hover:bg-muted/20"
-                  } ${isSelected ? "bg-primary/5" : ""}`}
+                      ? "bg-muted/5 opacity-50"
+                      : "hover:bg-muted/10"
+                  } ${isSelected ? "bg-primary/5 hover:bg-primary/8" : ""}`}
                 >
                   <td className="px-3 py-3">
                     <button
                       onClick={() => toggleOne(inv.id)}
-                      className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${
+                      className={`flex h-4.5 w-4.5 items-center justify-center rounded-md border transition-all duration-200 ${
                         isSelected
-                          ? "bg-primary border-primary"
-                          : "border-muted-foreground/30 hover:border-muted-foreground/60"
+                          ? "bg-primary border-primary shadow-sm shadow-primary/20"
+                          : "border-muted-foreground/20 hover:border-muted-foreground/40"
                       }`}
                     >
                       {isSelected && (
@@ -196,31 +194,31 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                           ? "Click to include in report"
                           : "Click to exclude from report"
                       }
-                      className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                      className={`flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200 ${
                         isExcluded
-                          ? "text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10"
-                          : "text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                          ? "text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10"
+                          : "text-secondary hover:text-secondary hover:bg-secondary/10"
                       }`}
                     >
                       {isExcluded ? (
-                        <FileX className="h-3.5 w-3.5" />
+                        <FileX className="h-4 w-4" />
                       ) : (
-                        <FileCheck className="h-3.5 w-3.5" />
+                        <FileCheck className="h-4 w-4" />
                       )}
                     </button>
                   </td>
-                  <td className="px-4 py-3 font-medium">
+                  <td className="px-4 py-3 font-semibold">
                     {inv.company ?? "\u2014"}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground max-w-xs truncate">
+                  <td className="px-4 py-3 text-muted-foreground/70 max-w-xs truncate">
                     {inv.subject}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono tabular-nums">
+                  <td className="px-4 py-3 text-right font-mono font-semibold tabular-nums">
                     {inv.amount
                       ? formatCurrency(inv.amount, inv.currency)
                       : "\u2014"}
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground text-xs">
+                  <td className="px-4 py-3 text-muted-foreground/70 text-xs">
                     {inv.date
                       ? new Date(inv.date).toLocaleDateString("en-US", {
                           month: "short",
@@ -235,7 +233,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                       {(() => {
                         const reason = getReviewReason(inv);
                         return reason ? (
-                          <span className="text-[10px] font-medium text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400 px-1.5 py-0.5 rounded whitespace-nowrap">
+                          <span className="text-[10px] font-semibold text-accent bg-accent/10 border border-accent/15 px-1.5 py-0.5 rounded-md whitespace-nowrap">
                             {reason}
                           </span>
                         ) : null;
@@ -261,20 +259,19 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
           return (
             <div
               key={inv.id}
-              className={`rounded-xl border bg-card p-4 space-y-2 transition-colors ${
+              className={`rounded-2xl border bg-card/80 backdrop-blur-sm p-4 space-y-2 transition-all duration-200 ${
                 isExcluded
-                  ? "border-border/50 opacity-60"
-                  : "border-border"
-              } ${isSelected ? "border-primary/30 bg-primary/5" : ""}`}
+                  ? "border-border/30 opacity-50"
+                  : "border-border/60"
+              } ${isSelected ? "border-primary/30 bg-primary/5 shadow-md shadow-primary/5" : ""}`}
             >
               <div className="flex items-start gap-3">
-                {/* Checkbox */}
                 <button
                   onClick={() => toggleOne(inv.id)}
-                  className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border transition-colors ${
+                  className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all duration-200 ${
                     isSelected
-                      ? "bg-primary border-primary"
-                      : "border-muted-foreground/30"
+                      ? "bg-primary border-primary shadow-sm shadow-primary/20"
+                      : "border-muted-foreground/20"
                   }`}
                 >
                   {isSelected && (
@@ -284,40 +281,39 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium truncate">
+                    <p className="text-sm font-semibold truncate">
                       {inv.company ?? inv.sender}
                     </p>
                     <div className="flex items-center gap-1.5 shrink-0">
-                      {/* Report toggle */}
                       <button
                         onClick={() => toggleSingle(inv.id, status)}
-                        className={`flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+                        className={`flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200 ${
                           isExcluded
-                            ? "text-muted-foreground/40 hover:text-destructive"
-                            : "text-emerald-600 hover:text-emerald-700"
+                            ? "text-muted-foreground/30 hover:text-destructive"
+                            : "text-secondary hover:text-secondary"
                         }`}
                       >
                         {isExcluded ? (
-                          <FileX className="h-3.5 w-3.5" />
+                          <FileX className="h-4 w-4" />
                         ) : (
-                          <FileCheck className="h-3.5 w-3.5" />
+                          <FileCheck className="h-4 w-4" />
                         )}
                       </button>
                       <Badge variant={badge.variant}>{badge.label}</Badge>
                     </div>
                   </div>
-                  <p className="text-xs text-muted-foreground line-clamp-2 mt-0.5">
+                  <p className="text-xs text-muted-foreground/60 line-clamp-2 mt-0.5">
                     {inv.subject}
                   </p>
                   {(() => {
                     const reason = getReviewReason(inv);
                     return reason ? (
-                      <span className="inline-block text-[10px] font-medium text-amber-600 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-400 px-1.5 py-0.5 rounded mt-1">
+                      <span className="inline-block text-[10px] font-semibold text-accent bg-accent/10 border border-accent/15 px-1.5 py-0.5 rounded-md mt-1.5">
                         {reason}
                       </span>
                     ) : null;
                   })()}
-                  <div className="flex items-center justify-between text-xs text-muted-foreground pt-1.5">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground/60 pt-2">
                     <span>
                       {inv.date
                         ? new Date(inv.date).toLocaleDateString("en-US", {
@@ -326,7 +322,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                           })
                         : ""}
                     </span>
-                    <span className="font-mono font-medium text-foreground">
+                    <span className="font-mono font-semibold text-foreground">
                       {inv.amount
                         ? formatCurrency(inv.amount, inv.currency)
                         : "\u2014"}
@@ -341,16 +337,16 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
 
       {/* Bulk action bar */}
       {selectedIds.length > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-xl border border-border bg-card px-5 py-3 shadow-xl animate-in">
-          <span className="text-sm font-medium tabular-nums">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-2xl border border-border/60 glass-strong px-6 py-3.5 shadow-2xl shadow-black/30 animate-float-up">
+          <span className="text-sm font-bold tabular-nums text-primary">
             {selectedIds.length} selected
           </span>
-          <div className="h-5 w-px bg-border" />
+          <div className="h-5 w-px bg-border/40" />
           <Button
             size="sm"
             variant="outline"
             onClick={() => setReportStatus(selectedIds, "INCLUDED")}
-            className="text-emerald-600 border-emerald-200 hover:bg-emerald-50"
+            className="text-secondary border-secondary/25 hover:bg-secondary/10 hover:border-secondary/40"
           >
             <FileCheck className="h-3.5 w-3.5" />
             Include
@@ -366,7 +362,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
           </Button>
           <button
             onClick={() => setSelected(new Set())}
-            className="text-xs text-muted-foreground hover:text-foreground ml-1"
+            className="text-xs text-muted-foreground/50 hover:text-foreground ml-1 transition-colors"
           >
             Clear
           </button>
