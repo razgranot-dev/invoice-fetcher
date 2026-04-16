@@ -174,7 +174,11 @@ class GmailConnector:
             )
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-            self.service = build("gmail", "v1", credentials=creds)
+            import httplib2
+            import google_auth_httplib2
+            http = httplib2.Http(timeout=30)
+            authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+            self.service = build("gmail", "v1", http=authed_http)
             return True, creds.to_json()
         except Exception as e:
             if _is_auth_error(e):
@@ -436,6 +440,54 @@ class GmailConnector:
         return self._exec(
             self.service.users().messages().get(userId="me", id=msg_id, format="full")
         )
+
+    def get_messages_batch(self, msg_ids: list[str]) -> list[dict | None]:
+        """Fetch multiple messages in a single Gmail batch HTTP call.
+
+        Returns a list aligned with *msg_ids* — each entry is the raw
+        message dict on success, or ``None`` if that sub-request failed.
+        Caller should pass at most 50 IDs per call (Gmail limit is 100,
+        but 50 gives better progress granularity).
+        """
+        results: list[dict | None] = [None] * len(msg_ids)
+
+        def _make_cb(idx: int, mid: str):
+            def _cb(request_id, response, exception):
+                if exception:
+                    _log.warning("Batch get_message failed for %s: %s", mid, exception)
+                else:
+                    results[idx] = response
+            return _cb
+
+        batch = self.service.new_batch_http_request()
+        for i, mid in enumerate(msg_ids):
+            batch.add(
+                self.service.users().messages().get(
+                    userId="me", id=mid, format="full"
+                ),
+                callback=_make_cb(i, mid),
+            )
+
+        from googleapiclient.errors import HttpError
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                batch.execute()
+                break
+            except HttpError as exc:
+                status = int(exc.resp.status)
+                if status == 401:
+                    raise
+                if status in _TRANSIENT_STATUS_CODES and attempt < _MAX_RETRIES:
+                    delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                    _log.warning(
+                        "Batch API HTTP %d — retry %d/%d in %.1fs",
+                        status, attempt + 1, _MAX_RETRIES, delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+
+        return results
 
     def parse_message(self, msg: dict) -> dict:
         """ממיר הודעת Gmail API למילון מובנה."""

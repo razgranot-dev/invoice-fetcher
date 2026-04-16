@@ -218,37 +218,42 @@ async def run_scan(req: ScanRequest):
             results: list[dict] = []
 
             # Phase 1: Fetch & parse emails (3% – 70%)
-            # Serial loop — httplib2.Http inside the Google API client is NOT
-            # thread-safe, so concurrent fetching corrupts socket/SSL state.
+            # Uses Gmail Batch API — up to 50 messages per HTTP round trip,
+            # ~10-50x faster than one-by-one serial fetching.
             # Skip attachment binary download — not needed for classification.
-            for i, msg_id in enumerate(msg_ids):
-                try:
-                    msg = connector.get_message(msg_id)
-                    if not msg:
-                        continue
-                    parsed = connector.parse_message(msg)
-                    parsed["saved_path"] = None
-                    for att in parsed.get("attachments", []):
-                        att.pop("data", None)
-                    text = body_parser.extract_text(
-                        parsed.get("body_text", ""), parsed.get("body_html", "")
-                    )
-                    parsed["notes"] = (
-                        "\u05ea\u05d5\u05db\u05df \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05e0\u05de\u05e6\u05d0 \u05d1\u05d2\u05d5\u05e3 \u05d4\u05d4\u05d5\u05d3\u05e2\u05d4"
-                        if body_parser.looks_like_invoice(text)
-                        else ""
-                    )
-                    results.append(parsed)
-                except Exception as exc:
-                    logger.warning("Skipping message %s: %s", msg_id, exc)
+            _FETCH_BATCH = 50
+            for batch_start in range(0, total, _FETCH_BATCH):
+                batch_end = min(batch_start + _FETCH_BATCH, total)
+                batch_ids = msg_ids[batch_start:batch_end]
 
-                pct = 3 + int((i + 1) / total * 67)
-                if total <= 50 or (i + 1) % 5 == 0 or (i + 1) == total:
-                    yield json.dumps({
-                        "progress": pct,
-                        "message": f"Reading email {i + 1}/{total}",
-                        "stage": "fetch",
-                    }) + "\n"
+                raw_msgs = connector.get_messages_batch(batch_ids)
+
+                for j, msg in enumerate(raw_msgs):
+                    if msg is None:
+                        continue
+                    try:
+                        parsed = connector.parse_message(msg)
+                        parsed["saved_path"] = None
+                        for att in parsed.get("attachments", []):
+                            att.pop("data", None)
+                        text = body_parser.extract_text(
+                            parsed.get("body_text", ""), parsed.get("body_html", "")
+                        )
+                        parsed["notes"] = (
+                            "\u05ea\u05d5\u05db\u05df \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05e0\u05de\u05e6\u05d0 \u05d1\u05d2\u05d5\u05e3 \u05d4\u05d4\u05d5\u05d3\u05e2\u05d4"
+                            if body_parser.looks_like_invoice(text)
+                            else ""
+                        )
+                        results.append(parsed)
+                    except Exception as exc:
+                        logger.warning("Skipping message %s: %s", batch_ids[j], exc)
+
+                pct = 3 + int(batch_end / total * 67)
+                yield json.dumps({
+                    "progress": pct,
+                    "message": f"Reading email {batch_end}/{total}",
+                    "stage": "fetch",
+                }) + "\n"
 
             # Phase 2: Classify (70–85%)
             yield json.dumps({"progress": 72, "message": "Classifying results...", "stage": "classify"}) + "\n"
