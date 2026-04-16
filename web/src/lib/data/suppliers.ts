@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { normalizeDomain } from "@/lib/utils";
+import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
 
 /**
  * Auto-creates supplier records using company-first brand logic:
@@ -35,7 +35,7 @@ export async function getSuppliers(organizationId: string) {
   const brandCounts = new Map<string, number>();
 
   for (const row of companyGroups) {
-    const brand = row.company?.trim().toLowerCase();
+    const brand = cleanCompanyName(row.company?.trim().toLowerCase() ?? "");
     if (!brand) continue;
     brandCounts.set(brand, (brandCounts.get(brand) ?? 0) + row._count);
   }

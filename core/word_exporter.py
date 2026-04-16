@@ -41,6 +41,15 @@ HEBREW_MONTHS = {
 }
 
 
+# ── Currency symbol → ISO code mapping ──────────────────────────────────────
+_SYMBOL_TO_ISO = {"₪": "ILS", "$": "USD", "€": "EUR", "£": "GBP"}
+
+def _norm_currency(raw: str | None) -> str:
+    """Normalize currency symbol or code to uppercase ISO 4217 code."""
+    code = (raw or "ILS").upper()
+    return _SYMBOL_TO_ISO.get(code, code)
+
+
 # ── RTL helpers ──────────────────────────────────────────────────────────────
 
 def _set_rtl(paragraph):
@@ -147,7 +156,7 @@ def _get_exchange_rates(rows: list[dict]) -> list[dict]:
     """For each USD invoice, fetch the BOI exchange rate. Returns list of rate info dicts."""
     usd_dates: dict[str, date] = {}
     for r in rows:
-        if (r.get("currency") or "ILS").upper() != "USD":
+        if _norm_currency(r.get("currency")) != "USD":
             continue
         d = _parse_date(r.get("date"))
         if d:
@@ -307,7 +316,7 @@ def create_invoice_report(
     ils_count = 0
     usd_count = 0
     for r in rows:
-        currency = (r.get("currency") or "ILS").upper()
+        currency = _norm_currency(r.get("currency"))
         amount = r.get("amount") or 0
         if currency == "ILS":
             total_ils += amount
@@ -320,7 +329,7 @@ def create_invoice_report(
         d = _parse_date(row.get("date"))
         date_str = d.strftime("%d/%m/%Y") if d else "\u2014"
         amount = row.get("amount")
-        currency = (row.get("currency") or "ILS").upper()
+        currency = _norm_currency(row.get("currency"))
         amount_str = _format_amount(amount, currency)
         supplier = row.get("company") or row.get("description") or "\u2014"
 

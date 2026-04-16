@@ -45,6 +45,26 @@ export async function getScanById(organizationId: string, scanId: string) {
       connection: { select: { email: true } },
       invoices: {
         orderBy: { date: "desc" },
+        take: 5000,
+        select: {
+          id: true,
+          scanId: true,
+          subject: true,
+          sender: true,
+          senderDomain: true,
+          company: true,
+          date: true,
+          amount: true,
+          currency: true,
+          classificationTier: true,
+          classificationScore: true,
+          hasAttachment: true,
+          reportStatus: true,
+          createdAt: true,
+          // Intentionally omit: bodyHtml, bodyText, classificationSignals,
+          // attachmentPath, gmailMessageId, notes — not needed for display
+          // and some contain sensitive/internal data.
+        },
       },
     },
   });
@@ -71,6 +91,9 @@ export async function createScan(
   });
 }
 
+/** Terminal scan states — once reached, status must not change. */
+const TERMINAL_SCAN_STATES = ["COMPLETED", "FAILED", "CANCELLED"] as const;
+
 export async function updateScanStatus(
   organizationId: string,
   scanId: string,
@@ -86,8 +109,14 @@ export async function updateScanStatus(
     completedAt?: Date;
   }
 ) {
+  // Guard: never overwrite a terminal state. A stale worker callback must not
+  // change a COMPLETED/FAILED/CANCELLED scan back to RUNNING or FAILED.
   return db.scan.updateMany({
-    where: { id: scanId, organizationId },
+    where: {
+      id: scanId,
+      organizationId,
+      status: { notIn: [...TERMINAL_SCAN_STATES] },
+    },
     data,
   });
 }
@@ -100,8 +129,9 @@ export async function updateScanProgress(
   // Use updateMany with organizationId-free filter because this is called
   // from the background after() callback which already verified org ownership.
   // The scanId is server-generated (not user-supplied) so this is safe.
+  // Guard: do not update progress on terminal-state scans (e.g. cancelled mid-run).
   return db.scan.updateMany({
-    where: { id: scanId },
+    where: { id: scanId, status: { notIn: [...TERMINAL_SCAN_STATES] } },
     data: { progress, progressMessage: message },
   });
 }
@@ -122,16 +152,19 @@ export async function getScanProgress(organizationId: string, scanId: string) {
 }
 
 /**
- * Cancel a running or pending scan. Returns the updated scan or null if not found/not cancellable.
+ * Cancel a running or pending scan. Returns true if cancelled, false if not found/not cancellable.
+ *
+ * Uses atomic updateMany with a status guard to prevent TOCTOU races:
+ * between a findFirst and a separate update, the background worker could
+ * complete/fail the scan, and our update would silently overwrite it.
  */
 export async function cancelScan(organizationId: string, scanId: string) {
-  const scan = await db.scan.findFirst({
-    where: { id: scanId, organizationId, status: { in: ["PENDING", "RUNNING"] } },
-  });
-  if (!scan) return null;
-
-  await db.scan.update({
-    where: { id: scanId },
+  const result = await db.scan.updateMany({
+    where: {
+      id: scanId,
+      organizationId,
+      status: { in: ["PENDING", "RUNNING"] },
+    },
     data: {
       status: "CANCELLED",
       progress: 100,
@@ -139,7 +172,7 @@ export async function cancelScan(organizationId: string, scanId: string) {
       completedAt: new Date(),
     },
   });
-  return scan;
+  return result.count > 0 ? true : null;
 }
 
 /**

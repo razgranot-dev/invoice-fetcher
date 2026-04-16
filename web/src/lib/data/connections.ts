@@ -25,6 +25,7 @@ export async function getActiveConnection(organizationId: string) {
 }
 
 export async function refreshConnectionToken(
+  organizationId: string,
   connectionId: string,
   tokens: {
     accessToken: string;
@@ -32,6 +33,17 @@ export async function refreshConnectionToken(
     tokenExpiry?: Date;
   }
 ) {
+  // Verify the connection belongs to the organization before updating.
+  // Uses findFirst + update pattern to enforce org-scoping since
+  // GmailConnection has no compound unique on (id, organizationId).
+  const conn = await db.gmailConnection.findFirst({
+    where: { id: connectionId, organizationId },
+    select: { id: true },
+  });
+  if (!conn) {
+    throw new Error("Connection not found or does not belong to this organization");
+  }
+
   return db.gmailConnection.update({
     where: { id: connectionId },
     data: {

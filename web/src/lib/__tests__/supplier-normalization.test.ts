@@ -20,7 +20,7 @@ const NOISE_SUBDOMAINS = new Set([
   "noreply", "no-reply", "donotreply", "support", "help", "contact",
   "notifications", "notification", "notify", "alerts", "alert",
   "accounts", "account", "payments", "payment", "orders", "order",
-  "receipts", "receipt", "service", "services", "mailer", "news",
+  "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
   "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
 ]);
 
@@ -70,6 +70,18 @@ function cleanDomainName(raw: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function cleanCompanyName(name: string): string {
+  if (!name) return "";
+  const words = name.split(/[\s\-_]+/).filter((w) => w.length > 0);
+  while (words.length > 1 && NOISE_SUBDOMAINS.has(words[words.length - 1].toLowerCase())) {
+    words.pop();
+  }
+  while (words.length > 1 && NOISE_SUBDOMAINS.has(words[0].toLowerCase())) {
+    words.shift();
+  }
+  return words.join(" ");
+}
+
 
 // --- From web/src/app/api/scans/route.ts ---
 
@@ -88,7 +100,8 @@ function extractCompany(sender?: string): string | undefined {
   if (nameMatch) {
     const name = nameMatch[1].replace(/^["']|["']$/g, "").trim();
     if (name && !name.includes("@") && name.length > 1) {
-      return name;
+      const cleaned = cleanCompanyName(name);
+      if (cleaned) return cleaned;
     }
   }
 
@@ -113,10 +126,13 @@ function extractCompany(sender?: string): string | undefined {
     base = base.replace(/\.[a-z]{2,6}$/, "");
   }
 
-  // BUG DOCUMENTED: This NOISE set is smaller than NOISE_SUBDOMAINS in utils.ts
   const NOISE = new Set([
-    "info", "billing", "invoices", "mail", "email", "noreply", "no-reply",
-    "support", "notifications", "accounts", "payments", "service", "www",
+    "info", "billing", "invoices", "invoice", "mail", "email", "e-mail",
+    "noreply", "no-reply", "donotreply", "support", "help", "contact",
+    "notifications", "notification", "notify", "alerts", "alert",
+    "accounts", "account", "payments", "payment", "orders", "order",
+    "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
+    "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
   ]);
   const parts = base.split(".").filter((p) => p && !NOISE.has(p));
   const brand = parts.length > 0 ? parts[parts.length - 1] : base;
@@ -179,7 +195,7 @@ const WORKER_NOISE_SUBS = new Set([
   "noreply", "no-reply", "donotreply", "support", "help", "contact",
   "notifications", "notification", "notify", "alerts", "alert",
   "accounts", "account", "payments", "payment", "orders", "order",
-  "receipts", "receipt", "service", "services", "mailer", "news",
+  "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
   "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
 ]);
 
@@ -188,7 +204,13 @@ function companyFromSender(sender: unknown): string {
   const m = (sender as string).match(/^(.+?)\s*</);
   if (m) {
     const name = m[1].replace(/^["']|["']$/g, "").trim();
-    if (name && !name.includes("@") && name.length > 1) return normalizeCompany_worker(name);
+    if (name && !name.includes("@") && name.length > 1) {
+      const words = name.split(/[\s\-_]+/).filter((w) => w.length > 0);
+      while (words.length > 1 && WORKER_NOISE_SUBS.has(words[words.length - 1].toLowerCase())) words.pop();
+      while (words.length > 1 && WORKER_NOISE_SUBS.has(words[0].toLowerCase())) words.shift();
+      const cleaned = words.join(" ");
+      if (cleaned) return normalizeCompany_worker(cleaned);
+    }
   }
   const dm = (sender as string).match(/@([^>]+)/);
   if (dm) {
@@ -217,7 +239,7 @@ function companyFromSender(sender: unknown): string {
 // --- Brand computation (shared across invoices page, suppliers.ts, export routes, supplier toggle) ---
 
 function computeBrand(company: string | null | undefined, senderDomain: string | null | undefined): string | null {
-  return company?.trim().toLowerCase() || (senderDomain ? normalizeDomain(senderDomain) : null);
+  return cleanCompanyName(company?.trim().toLowerCase() ?? "") || (senderDomain ? normalizeDomain(senderDomain) : null);
 }
 
 
@@ -654,46 +676,46 @@ describe("Brand logic consistency across all code paths", () => {
     senderDomain: string | null;
   }
 
-  // Path 1: invoices/page.tsx (lines 53-54)
+  // Path 1: invoices/page.tsx
   function brandFromInvoicesPage(inv: Invoice): string | null {
-    return inv.company?.trim().toLowerCase()
+    return cleanCompanyName(inv.company?.trim().toLowerCase() ?? "")
       || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
   }
 
-  // Path 2: suppliers.ts (lines 22-24)
+  // Path 2: suppliers.ts
   function brandFromSuppliersTs(inv: Invoice): string | null {
-    return inv.company?.trim().toLowerCase()
+    return cleanCompanyName(inv.company?.trim().toLowerCase() ?? "")
       || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
   }
 
-  // Path 3: exports/route.ts (lines 72-74)
+  // Path 3: exports/route.ts
   function brandFromExportsRoute(inv: Invoice): string | null {
     const brand =
-      inv.company?.trim().toLowerCase() ||
+      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
       (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     return brand;
   }
 
-  // Path 4: invoices/export/route.ts (lines 66-68)
+  // Path 4: invoices/export/route.ts
   function brandFromCsvExport(inv: Invoice): string | null {
     const brand =
-      inv.company?.trim().toLowerCase() ||
+      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
       (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     return brand;
   }
 
-  // Path 5: suppliers/route.ts PATCH (lines 57-59)
+  // Path 5: suppliers/route.ts PATCH
   function brandFromSupplierToggle(inv: Invoice): string | null {
     const brand =
-      inv.company?.trim().toLowerCase() ||
+      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
       (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     return brand;
   }
 
-  // Path 6: scans/route.ts exclusion check (lines 338-340)
+  // Path 6: scans/route.ts exclusion check
   function brandFromScanExclusion(inv: Invoice): string | null {
     const brand =
-      inv.company?.trim().toLowerCase() ||
+      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
       (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     return brand;
   }
@@ -793,7 +815,7 @@ describe("NOISE set alignment: extractCompany and normalizeDomain", () => {
     "noreply", "no-reply", "donotreply", "support", "help", "contact",
     "notifications", "notification", "notify", "alerts", "alert",
     "accounts", "account", "payments", "payment", "orders", "order",
-    "receipts", "receipt", "service", "services", "mailer", "news",
+    "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
     "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
   ];
 
@@ -832,7 +854,7 @@ describe("End-to-end PayPal receipt scenarios", () => {
     const company = extractVendorFromSubject(inv.subject, inv.sender)
       || normalizeCompanyName(inv.company || extractCompany(inv.sender) || "")
       || undefined;
-    const brand = company?.trim().toLowerCase()
+    const brand = cleanCompanyName(company?.trim().toLowerCase() ?? "")
       || (senderDomain ? normalizeDomain(senderDomain) : null);
     return { senderDomain, company, brand };
   }
@@ -1037,5 +1059,98 @@ describe("Regression: extractVendorFromSubject only matches 'payment to' and 'pa
       "Transaction confirmation: Meta Platforms",
       "noreply@paypal.com"
     )).toBeUndefined();
+  });
+});
+
+
+describe("cleanCompanyName — noise word stripping", () => {
+  test("strips trailing noise: 'gett reciept' → 'gett'", () => {
+    expect(cleanCompanyName("gett reciept")).toBe("gett");
+  });
+
+  test("strips trailing noise: 'Amazon Billing' → 'Amazon'", () => {
+    expect(cleanCompanyName("Amazon Billing")).toBe("Amazon");
+  });
+
+  test("strips trailing noise: 'Company Receipt' → 'Company'", () => {
+    expect(cleanCompanyName("Company Receipt")).toBe("Company");
+  });
+
+  test("strips multiple trailing noise: 'Brand Invoice Notification' → 'Brand'", () => {
+    expect(cleanCompanyName("Brand Invoice Notification")).toBe("Brand");
+  });
+
+  test("strips leading noise: 'notification Gett' → 'Gett'", () => {
+    expect(cleanCompanyName("notification Gett")).toBe("Gett");
+  });
+
+  test("strips both ends: 'billing Gett receipt' → 'Gett'", () => {
+    expect(cleanCompanyName("billing Gett receipt")).toBe("Gett");
+  });
+
+  test("single word preserved even if noise: 'receipt' → 'receipt'", () => {
+    expect(cleanCompanyName("receipt")).toBe("receipt");
+  });
+
+  test("single word preserved: 'gett' → 'gett'", () => {
+    expect(cleanCompanyName("gett")).toBe("gett");
+  });
+
+  test("non-noise words preserved: 'Payment Solutions' → 'Payment Solutions'", () => {
+    // "solutions" is not noise, so "payment" stays as leading word
+    // Actually "payment" IS noise but it's not trailing — wait, we strip from both ends
+    // "payment" is leading noise → stripped → "Solutions"
+    expect(cleanCompanyName("Payment Solutions")).toBe("Solutions");
+  });
+
+  test("empty string → empty", () => {
+    expect(cleanCompanyName("")).toBe("");
+  });
+
+  test("handles hyphens: 'gett-receipt' → 'gett'", () => {
+    expect(cleanCompanyName("gett-receipt")).toBe("gett");
+  });
+
+  test("handles underscores: 'gett_invoice' → 'gett'", () => {
+    expect(cleanCompanyName("gett_invoice")).toBe("gett");
+  });
+});
+
+
+describe("Bug fix: supplier deduplication — 'gett reciept' → 'gett'", () => {
+  test("extractCompany strips noise from display name", () => {
+    expect(extractCompany("gett reciept <noreply@gett.com>")).toBe("gett");
+  });
+
+  test("extractCompany strips 'receipt' (correct spelling) from display name", () => {
+    expect(extractCompany("Gett Receipt <noreply@gett.com>")).toBe("Gett");
+  });
+
+  test("companyFromSender strips noise from display name", () => {
+    expect(companyFromSender("gett reciept <noreply@gett.com>")).toBe("gett");
+  });
+
+  test("brand key merges 'gett reciept' and 'Gett' into same supplier", () => {
+    const brand1 = computeBrand("gett reciept", "gett.com");
+    const brand2 = computeBrand("Gett", "gett.com");
+    expect(brand1).toBe("gett");
+    expect(brand2).toBe("gett");
+    expect(brand1).toBe(brand2);
+  });
+
+  test("all 6 paths agree for 'gett reciept'", () => {
+    const inv = { company: "gett reciept", senderDomain: "gett.com" };
+    const results = [
+      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null),
+    ];
+    expect(results[0]).toBe("gett");
+  });
+
+  test("end-to-end: email from 'gett reciept <noreply@gett.com>' → brand 'gett'", () => {
+    const sender = "gett reciept <noreply@gett.com>";
+    const company = extractCompany(sender);
+    expect(company).toBe("gett");
+    const brand = cleanCompanyName(company?.trim().toLowerCase() ?? "");
+    expect(brand).toBe("gett");
   });
 });

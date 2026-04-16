@@ -13,6 +13,9 @@ export async function getInvoices(
   },
   take = 500
 ) {
+  // Hard cap on take to prevent unbounded result sets
+  const safeTake = Math.min(Math.max(1, take), 10000);
+
   const where: any = { organizationId };
 
   if (filters?.scanId) {
@@ -36,17 +39,19 @@ export async function getInvoices(
     if (filters.dateTo) where.date.lte = filters.dateTo;
   }
   if (filters?.search) {
+    // Truncate search string to prevent abuse via overly long ILIKE patterns
+    const safeSearch = filters.search.slice(0, 500);
     where.OR = [
-      { subject: { contains: filters.search, mode: "insensitive" } },
-      { sender: { contains: filters.search, mode: "insensitive" } },
-      { company: { contains: filters.search, mode: "insensitive" } },
+      { subject: { contains: safeSearch, mode: "insensitive" } },
+      { sender: { contains: safeSearch, mode: "insensitive" } },
+      { company: { contains: safeSearch, mode: "insensitive" } },
     ];
   }
 
   return db.invoice.findMany({
     where,
     orderBy: { date: "desc" },
-    take,
+    take: safeTake,
   });
 }
 
@@ -94,10 +99,12 @@ export async function getInvoiceStats(organizationId: string) {
 }
 
 export async function getRecentInvoices(organizationId: string, limit = 10) {
+  // Hard cap on limit to prevent abuse
+  const safeLimit = Math.min(Math.max(1, limit), 100);
   return db.invoice.findMany({
     where: { organizationId },
     orderBy: { createdAt: "desc" },
-    take: limit,
+    take: safeLimit,
   });
 }
 

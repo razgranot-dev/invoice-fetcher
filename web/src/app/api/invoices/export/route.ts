@@ -2,14 +2,17 @@ import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { getInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
-import { normalizeDomain } from "@/lib/utils";
+import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
 
 function escapeCsv(value: string): string {
-  // Prevent CSV formula injection: prefix dangerous leading chars with a tab
+  // Prevent CSV formula injection: prefix dangerous leading chars with a
+  // single-quote so Excel/Sheets treats the cell as plain text.  The tab
+  // prefix alone is insufficient — some spreadsheet software still evaluates
+  // formulas inside quoted cells when preceded only by whitespace.
   const DANGEROUS_PREFIXES = ["=", "+", "-", "@", "\t", "\r"];
   let safe = value;
   if (safe.length > 0 && DANGEROUS_PREFIXES.includes(safe[0])) {
-    safe = "\t" + safe;
+    safe = "'" + safe;
   }
   if (
     safe.includes(",") ||
@@ -40,15 +43,32 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = req.nextUrl;
+
+  // Validate and sanitize query parameters
+  const rawSearch = searchParams.get("search") || undefined;
+  const rawTier = searchParams.get("tier") || undefined;
+  const rawCompany = searchParams.get("company") || undefined;
+  const rawScanId = searchParams.get("scanId") || undefined;
+  const rawReportStatus = searchParams.get("reportStatus") || "INCLUDED";
+
+  const search = rawSearch && rawSearch.length <= 500 ? rawSearch : undefined;
+  const company = rawCompany && rawCompany.length <= 500 ? rawCompany : undefined;
+
+  // Validate tier enum
+  const VALID_TIERS = new Set(["confirmed_invoice", "likely_invoice", "possible_invoice", "not_invoice"]);
+  const tier = rawTier && VALID_TIERS.has(rawTier) ? rawTier : undefined;
+
+  // Validate scanId format (cuid)
+  const scanId = rawScanId && /^c[a-z0-9]{20,}$/i.test(rawScanId) && rawScanId.length <= 100
+    ? rawScanId : undefined;
+
+  // Validate reportStatus enum
+  const reportStatus = rawReportStatus === "INCLUDED" || rawReportStatus === "EXCLUDED"
+    ? rawReportStatus : "INCLUDED";
+
   const rawInvoices = await getInvoices(
     orgId,
-    {
-      search: searchParams.get("search") || undefined,
-      tier: searchParams.get("tier") || undefined,
-      company: searchParams.get("company") || undefined,
-      scanId: searchParams.get("scanId") || undefined,
-      reportStatus: searchParams.get("reportStatus") || "INCLUDED",
-    },
+    { search, tier, company, scanId, reportStatus },
     10000
   );
 
@@ -64,7 +84,7 @@ export async function GET(req: NextRequest) {
     excludedBrands.size > 0
       ? rawInvoices.filter((inv) => {
           const brand =
-            inv.company?.trim().toLowerCase() ||
+            cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
             (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
           return !(brand && excludedBrands.has(brand));
         })

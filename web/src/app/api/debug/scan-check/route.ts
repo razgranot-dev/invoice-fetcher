@@ -3,10 +3,16 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 
 /**
- * Diagnostic endpoint — restricted to org owners.
+ * Diagnostic endpoint — restricted to org owners in non-production environments.
  * GET /api/debug/scan-check
+ *
+ * SECURITY: Disabled in production to prevent information disclosure.
  */
 export async function GET() {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -21,10 +27,11 @@ export async function GET() {
     return NextResponse.json({ error: "No organization found" }, { status: 404 });
   }
 
-  // 1. All scans with _count
+  // 1. Recent scans with _count (capped at 50 to prevent unbounded queries)
   const scans = await db.scan.findMany({
     where: { organizationId: orgId },
     orderBy: { createdAt: "desc" },
+    take: 50,
     select: {
       id: true,
       status: true,

@@ -31,8 +31,9 @@ if not os.getenv("GOOGLE_CLIENT_ID") and os.getenv("AUTH_GOOGLE_ID"):
 if not os.getenv("GOOGLE_CLIENT_SECRET") and os.getenv("AUTH_GOOGLE_SECRET"):
     os.environ["GOOGLE_CLIENT_SECRET"] = os.environ["AUTH_GOOGLE_SECRET"]
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 # Add project root to path so we can import core/
 sys.path.insert(0, _project_root)
@@ -45,16 +46,52 @@ from core.attachment_handler import AttachmentHandler
 
 app = FastAPI(title="Invoice Fetcher Worker", version="0.1.0")
 
+# ── Bearer token auth middleware ─────────────────────────────────────────
+# When WORKER_SECRET is set, all requests must include a matching
+# Authorization: Bearer <secret> header. This prevents unauthorized
+# network callers from invoking scan/export endpoints directly.
 
-# ── In-memory file cache (TTL-based) ───────────────────────────────────────
+_WORKER_SECRET = os.getenv("WORKER_SECRET", "")
+
+
+@app.middleware("http")
+async def verify_worker_auth(request: Request, call_next):
+    # Health endpoint is exempt — used by load balancers / monitors
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    if _WORKER_SECRET:
+        auth_header = request.headers.get("authorization", "")
+        expected = f"Bearer {_WORKER_SECRET}"
+        if auth_header != expected:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing worker authorization"},
+            )
+
+    return await call_next(request)
+
+
+# ── In-memory file cache (TTL-based, size-bounded) ───────────────────────────
 
 _FILE_CACHE: dict[str, dict] = {}
 _CACHE_TTL = 1800  # 30 minutes
+_CACHE_MAX_ENTRIES = 50  # Max cached files to prevent OOM
+_CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB total cache limit
 _cache_lock = Lock()
 
 
+def _cache_total_bytes() -> int:
+    """Total bytes of cached file data. Must be called with _cache_lock held."""
+    return sum(len(v.get("data", b"")) for v in _FILE_CACHE.values())
+
+
 def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
-    """Store a generated file in the in-memory cache."""
+    """Store a generated file in the in-memory cache.
+
+    Enforces entry count and total size limits. Evicts oldest entries
+    when limits are exceeded to prevent unbounded memory growth.
+    """
     with _cache_lock:
         _FILE_CACHE[job_id] = {
             "data": data,
@@ -62,6 +99,15 @@ def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
             **(metadata or {}),
         }
         _cache_cleanup()
+        # Evict oldest entries if over count or size limits
+        while (
+            len(_FILE_CACHE) > _CACHE_MAX_ENTRIES
+            or _cache_total_bytes() > _CACHE_MAX_BYTES
+        ) and len(_FILE_CACHE) > 1:
+            oldest_key = min(_FILE_CACHE, key=lambda k: _FILE_CACHE[k]["created"])
+            if oldest_key == job_id:
+                break  # Don't evict the entry we just added
+            del _FILE_CACHE[oldest_key]
 
 
 def _cache_get(job_id: str) -> dict | None:
@@ -88,13 +134,13 @@ def _cache_cleanup():
 
 
 class ScanRequest(BaseModel):
-    access_token: str
-    refresh_token: str | None = None
-    token_expiry: str | None = None
-    keywords: list[str] = []
-    days_back: int = 30
+    access_token: str = Field(..., max_length=4096)
+    refresh_token: str | None = Field(None, max_length=4096)
+    token_expiry: str | None = Field(None, max_length=64)
+    keywords: list[str] = Field(default=[], max_length=20)
+    days_back: int = Field(30, ge=1, le=365)
     unread_only: bool = True
-    scan_id: str = ""  # For tracking
+    scan_id: str = Field("", max_length=64)
 
 
 class ScanResult(BaseModel):
@@ -105,11 +151,11 @@ class ScanResult(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    invoices: list[dict[str, Any]]
-    format: str = "csv"  # csv, word
-    organization_name: str = ""
+    invoices: list[dict[str, Any]] = Field(default=[], max_length=10_000)
+    format: str = Field("csv", max_length=20)
+    organization_name: str = Field("", max_length=500)
     include_screenshots: bool = False
-    job_id: str = ""  # When set, file is cached for later download via GET /export/{job_id}/download
+    job_id: str = Field("", max_length=64)
 
 
 # ── Health ───────────────────────────────────────────────────────────────
@@ -584,7 +630,13 @@ async def export_screenshots_zip(req: ExportRequest):
 @app.get("/export/{job_id}/download")
 async def download_export(job_id: str):
     """Serve a cached export file. Files expire after 30 minutes."""
+    import re
     from starlette.responses import Response
+
+    # Validate job_id format to prevent path traversal / injection.
+    # Expected format: CUID (starts with 'c', alphanumeric, 20-30 chars).
+    if not re.fullmatch(r"c[a-zA-Z0-9]{20,30}", job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
 
     entry = _cache_get(job_id)
     if not entry:
@@ -593,11 +645,15 @@ async def download_export(job_id: str):
             detail="Export file has expired or was not found. Please re-run the export.",
         )
 
+    # Sanitize filename — strip any characters that could inject headers or paths.
+    raw_filename = entry.get("filename", "export")
+    safe_filename = re.sub(r'[^a-zA-Z0-9._-]', '_', raw_filename)
+
     return Response(
         content=entry["data"],
         media_type=entry.get("content_type", "application/octet-stream"),
         headers={
-            "Content-Disposition": f'attachment; filename="{entry.get("filename", "export")}"',
+            "Content-Disposition": f'attachment; filename="{safe_filename}"',
             "Content-Length": str(len(entry["data"])),
         },
     )
@@ -608,5 +664,13 @@ async def download_export(job_id: str):
 if __name__ == "__main__":
     import uvicorn
 
+    host = os.environ.get("BIND_HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+
+    if not _WORKER_SECRET:
+        logger.warning(
+            "WORKER_SECRET is not set — worker endpoints are unauthenticated. "
+            "Set WORKER_SECRET in production to prevent unauthorized access."
+        )
+
+    uvicorn.run(app, host=host, port=port)

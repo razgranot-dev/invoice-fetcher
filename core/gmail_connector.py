@@ -216,8 +216,11 @@ class GmailConnector:
                     continue
                 raise  # non-retryable or exhausted retries
 
-    # Known invoice sender domains — emails from these are always included
+    # Known invoice sender domains — emails from these are always included.
+    # MUST stay in sync with _INVOICE_SENDER_DOMAINS in invoice_classifier.py
+    # so emails that the classifier can score are actually fetched.
     INVOICE_SENDER_DOMAINS: list[str] = [
+        # Tech / SaaS
         "apple.com",
         "em.apple.com",
         "anthropic.com",
@@ -226,14 +229,70 @@ class GmailConnector:
         "payments.google.com",
         "hostinger.com",
         "mailer.hostinger.com",
-        "paypal.com",
-        "intl.paypal.com",
-        "amazon.com",
-        "amazon.co.il",
         "microsoft.com",
+        "azure.com",
         "wix.com",
         "spotify.com",
         "netflix.com",
+        "adobe.com",
+        "zoom.us",
+        "linkedin.com",
+        "vercel.com",
+        "digitalocean.com",
+        "heroku.com",
+        "namecheap.com",
+        "godaddy.com",
+        "shopify.com",
+        "squarespace.com",
+        "dropbox.com",
+        # Payment processors
+        "paypal.com",
+        "intl.paypal.com",
+        "stripe.com",
+        # E-commerce
+        "amazon.com",
+        "amazon.co.il",
+        "aws.amazon.com",
+        # Ride-sharing / delivery
+        "uber.com",
+        "receipts.uber.com",
+        "lyft.com",
+        "wolt.com",
+        "bolt.eu",
+        "gett.com",
+        # Food delivery
+        "tenbis.co.il",
+        "10bis.co.il",
+        "doordash.com",
+        "deliveroo.com",
+        "grubhub.com",
+        "cibus.co.il",
+        # Travel / booking / OTAs
+        "booking.com",
+        "airbnb.com",
+        "expedia.com",
+        "hotels.com",
+        "agoda.com",
+        # Hotel chains
+        "hilton.com",
+        "marriott.com",
+        "ihg.com",
+        "hyatt.com",
+        "accor.com",
+        "radissonhotels.com",
+        # E-commerce
+        "aliexpress.com",
+        "ebay.com",
+        "etsy.com",
+        "temu.com",
+        "shein.com",
+        # Israeli telecom / utilities
+        "partner.co.il",
+        "bezeq.co.il",
+        "cellcom.co.il",
+        "hot.net.il",
+        "pelephone.co.il",
+        "electric.co.il",
     ]
 
     # Subject patterns that indicate invoices/receipts (case-insensitive in Gmail)
@@ -260,6 +319,24 @@ class GmailConnector:
         "payment received",
         "subscription receipt",
         "your order",
+        # Generic receipt patterns
+        "your receipt",
+        "your bill is ready",
+        "your monthly bill",
+        # Ride / transport receipt patterns
+        "ride receipt",
+        "trip receipt",
+        "your ride with",
+        "trip with uber",
+        "trip with lyft",
+        # Food delivery / e-commerce order receipts
+        "your order from",
+        "delivery receipt",
+        # Hotel / stay receipt patterns
+        "your folio",
+        "checkout receipt",
+        "stay receipt",
+        "your stay at",
         # Hebrew invoice patterns
         "חשבונית מס",
         "אישור חיוב",

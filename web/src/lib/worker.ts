@@ -6,6 +6,17 @@
  */
 
 const WORKER_URL = process.env.WORKER_URL ?? "http://localhost:8000";
+const WORKER_SECRET = process.env.WORKER_SECRET ?? "";
+
+/** Build auth headers for worker requests. When WORKER_SECRET is set,
+ *  includes a Bearer token so the worker can reject unauthorized callers. */
+function workerHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...extra };
+  if (WORKER_SECRET) {
+    headers["Authorization"] = `Bearer ${WORKER_SECRET}`;
+  }
+  return headers;
+}
 
 interface WorkerScanRequest {
   access_token: string;
@@ -45,6 +56,7 @@ export async function checkWorkerHealth(): Promise<{
 }> {
   try {
     const res = await fetch(`${WORKER_URL}/health`, {
+      headers: workerHeaders(),
       signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
@@ -81,7 +93,7 @@ export async function dispatchScan(
 
   const res = await fetch(`${WORKER_URL}/scan`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: workerHeaders(),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(600_000), // 10 min timeout for large scans (4+ months back)
   });
@@ -276,9 +288,18 @@ const NOISE_SUBS = new Set([
   "noreply", "no-reply", "donotreply", "support", "help", "contact",
   "notifications", "notification", "notify", "alerts", "alert",
   "accounts", "account", "payments", "payment", "orders", "order",
-  "receipts", "receipt", "service", "services", "mailer", "news",
+  "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
   "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
+  // Hotel loyalty program suffixes — prevent "Marriott Bonvoy" vs "Marriott" duplicates
+  "bonvoy", "honors",
 ]);
+
+/** Normalize a currency symbol or code to ISO 4217. */
+const SYMBOL_TO_ISO: Record<string, string> = { "₪": "ILS", "$": "USD", "€": "EUR", "£": "GBP" };
+function normCurrency(raw: unknown): string {
+  const s = typeof raw === "string" && raw ? raw : "ILS";
+  return SYMBOL_TO_ISO[s] ?? s;
+}
 
 /** Extract a display-friendly company name from sender for export fallback */
 function companyFromSender(sender: unknown): string {
@@ -287,7 +308,14 @@ function companyFromSender(sender: unknown): string {
   const m = sender.match(/^(.+?)\s*</);
   if (m) {
     const name = m[1].replace(/^["']|["']$/g, "").trim();
-    if (name && !name.includes("@") && name.length > 1) return normalizeCompany(name);
+    if (name && !name.includes("@") && name.length > 1) {
+      // Strip noise words (e.g., "gett reciept" → "gett")
+      const words = name.split(/[\s\-_]+/).filter((w) => w.length > 0);
+      while (words.length > 1 && NOISE_SUBS.has(words[words.length - 1].toLowerCase())) words.pop();
+      while (words.length > 1 && NOISE_SUBS.has(words[0].toLowerCase())) words.shift();
+      const cleaned = words.join(" ");
+      if (cleaned) return normalizeCompany(cleaned);
+    }
   }
   // Fall back to domain brand — properly handle compound TLDs
   const dm = sender.match(/@([^>]+)/);
@@ -327,7 +355,7 @@ export async function dispatchWordExport(
     subject: inv.subject ?? "",
     sender: inv.sender ?? "",
     amount: inv.amount ?? null,
-    currency: inv.currency ?? "ILS",
+    currency: normCurrency(inv.currency),
     date: inv.date
       ? new Date(inv.date as string).toISOString().split("T")[0]
       : "",
@@ -342,7 +370,7 @@ export async function dispatchWordExport(
 
   const res = await fetch(`${WORKER_URL}/export/word`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: workerHeaders(),
     body: JSON.stringify({
       invoices: mapped,
       organization_name: organizationName,
@@ -372,7 +400,7 @@ export async function dispatchScreenshotZip(
     subject: inv.subject ?? "",
     sender: inv.sender ?? "",
     amount: inv.amount ?? null,
-    currency: inv.currency ?? "ILS",
+    currency: normCurrency(inv.currency),
     date: inv.date
       ? new Date(inv.date as string).toISOString().split("T")[0]
       : "",
@@ -383,7 +411,7 @@ export async function dispatchScreenshotZip(
 
   const res = await fetch(`${WORKER_URL}/export/screenshots-zip`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: workerHeaders(),
     body: JSON.stringify({
       invoices: mapped,
       include_screenshots: true,
@@ -403,9 +431,17 @@ export async function dispatchScreenshotZip(
 /**
  * Proxy a file download from the worker's in-memory cache.
  * Returns the raw fetch Response for streaming to the browser.
+ *
+ * The jobId is validated to be a safe CUID before interpolation into the URL
+ * to prevent path traversal or SSRF via crafted identifiers.
  */
 export async function proxyWorkerDownload(jobId: string): Promise<Response> {
+  // Validate jobId format — must be a CUID (starts with 'c', alphanumeric, 20-30 chars)
+  if (!/^c[a-z0-9]{20,30}$/i.test(jobId)) {
+    throw new Error("Invalid export ID format");
+  }
   return fetch(`${WORKER_URL}/export/${jobId}/download`, {
+    headers: workerHeaders(),
     signal: AbortSignal.timeout(30_000),
   });
 }

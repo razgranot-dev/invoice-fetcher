@@ -12,7 +12,11 @@ export default function AppError({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error("App error boundary caught:", error);
+    // Only log error details in development to prevent information leakage
+    // in production browser consoles (which attackers can observe via XSS).
+    if (process.env.NODE_ENV === "development") {
+      console.error("App error boundary caught:", error);
+    }
   }, [error]);
 
   return (

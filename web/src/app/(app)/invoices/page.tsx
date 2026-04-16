@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { requireOrganization } from "@/lib/session";
 import { getInvoices, getCompanyList, getScanListForFilter } from "@/lib/data/invoices";
 import { getSuppliers } from "@/lib/data/suppliers";
-import { normalizeDomain } from "@/lib/utils";
+import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
 import { InvoiceFilters } from "./filters";
 import { SupplierPanel } from "./supplier-panel";
 import { InvoiceList } from "./invoice-list";
@@ -46,7 +46,7 @@ export default async function InvoicesPage({
 
   const invoiceBrandCounts = new Map<string, { displayName: string; count: number }>();
   for (const inv of allInvoices) {
-    const brand = inv.company?.trim().toLowerCase()
+    const brand = cleanCompanyName(inv.company?.trim().toLowerCase() ?? "")
       || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
     if (!brand) continue;
     const entry = invoiceBrandCounts.get(brand);
@@ -83,7 +83,7 @@ export default async function InvoicesPage({
   const visibleInvoices =
     excludedBrands.size > 0
       ? allInvoices.filter((inv) => {
-          const brand = inv.company?.trim().toLowerCase()
+          const brand = cleanCompanyName(inv.company?.trim().toLowerCase() ?? "")
             || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
           if (brand && excludedBrands.has(brand)) return false;
           return true;

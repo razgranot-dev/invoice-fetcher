@@ -14,9 +14,17 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
-  const search = searchParams.get("search") ?? undefined;
-  const tier = searchParams.get("tier") ?? undefined;
-  const company = searchParams.get("company") ?? undefined;
+  const rawSearch = searchParams.get("search") ?? undefined;
+  const rawTier = searchParams.get("tier") ?? undefined;
+  const rawCompany = searchParams.get("company") ?? undefined;
+
+  // Validate and sanitize query parameters
+  const search = rawSearch && rawSearch.length <= 500 ? rawSearch : undefined;
+  const company = rawCompany && rawCompany.length <= 500 ? rawCompany : undefined;
+
+  // Validate tier enum
+  const VALID_TIERS = new Set(["confirmed_invoice", "likely_invoice", "possible_invoice", "not_invoice"]);
+  const tier = rawTier && VALID_TIERS.has(rawTier) ? rawTier : undefined;
 
   const [invoices, companies] = await Promise.all([
     getInvoices(orgId, { search, tier, company }),

@@ -18,6 +18,12 @@ export async function GET(
   }
 
   const { id } = await params;
+
+  // Validate path parameter format (cuid)
+  if (!id || typeof id !== "string" || id.length > 100 || !/^c[a-z0-9]{20,}$/i.test(id)) {
+    return new Response("Invalid export ID format", { status: 400 });
+  }
+
   const exp = await getExportById(orgId, id);
 
   if (!exp) {

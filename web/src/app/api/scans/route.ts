@@ -6,7 +6,7 @@ import { createScan, getScans, updateScanStatus, updateScanProgress } from "@/li
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
-import { normalizeDomain } from "@/lib/utils";
+import { normalizeDomain, cleanCompanyName, normalizeCurrency } from "@/lib/utils";
 import { dispatchScan } from "@/lib/worker";
 
 /** Extract clean domain from an email like "Name <user@domain.com>" or "user@domain.com" */
@@ -31,7 +31,10 @@ function extractCompany(sender?: string): string | undefined {
     const name = nameMatch[1].replace(/^["']|["']$/g, "").trim();
     // Skip if the display name is just an email address
     if (name && !name.includes("@") && name.length > 1) {
-      return name;
+      // Strip noise words like "receipt", "billing" from display names
+      const cleaned = cleanCompanyName(name);
+      if (cleaned) return cleaned;
+      // All words were noise — fall through to domain extraction
     }
   }
 
@@ -65,8 +68,10 @@ function extractCompany(sender?: string): string | undefined {
     "noreply", "no-reply", "donotreply", "support", "help", "contact",
     "notifications", "notification", "notify", "alerts", "alert",
     "accounts", "account", "payments", "payment", "orders", "order",
-    "receipts", "receipt", "service", "services", "mailer", "news",
+    "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
     "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
+    // Hotel loyalty program suffixes — prevent "Marriott Bonvoy" vs "Marriott" duplicates
+    "bonvoy", "honors",
   ]);
   const parts = base.split(".").filter((p) => p && !NOISE.has(p));
   const brand = parts.length > 0 ? parts[parts.length - 1] : base;
@@ -161,11 +166,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const keywords = Array.isArray(body.keywords) ? body.keywords.filter((k: unknown) => typeof k === "string").slice(0, 20) : [];
+  const keywords = Array.isArray(body.keywords)
+    ? body.keywords
+        .filter((k: unknown) => typeof k === "string" && k.length <= 200)
+        .map((k: string) => k.trim())
+        .filter((k: string) => k.length > 0)
+        .slice(0, 20)
+    : [];
   const daysBack = typeof body.daysBack === "number" && Number.isInteger(body.daysBack) && body.daysBack >= 1 && body.daysBack <= 365
     ? body.daysBack
     : 30;
   const unreadOnly = typeof body.unreadOnly === "boolean" ? body.unreadOnly : true;
+
+  // Duplicate scan prevention: block if a RUNNING scan already exists for this org
+  const runningScan = await db.scan.findFirst({
+    where: { organizationId: orgId, status: { in: ["PENDING", "RUNNING"] } },
+    select: { id: true },
+  });
+  if (runningScan) {
+    return NextResponse.json(
+      { error: "A scan is already in progress. Please wait for it to complete or cancel it first." },
+      { status: 429 }
+    );
+  }
 
   const scan = await createScan(orgId, connection.id, {
     keywords,
@@ -244,7 +267,7 @@ export async function POST(req: NextRequest) {
             || undefined,
           date: inv.date ? new Date(inv.date) : undefined,
           amount: inv.amount ?? undefined,
-          currency: inv.currency ?? "ILS",
+          currency: normalizeCurrency(inv.currency ?? "ILS"),
           classificationTier: inv.classification_tier ?? "not_invoice",
           classificationScore: inv.classification_score ?? 0,
           classificationSignals: inv.classification_signals,
@@ -350,7 +373,7 @@ export async function POST(req: NextRequest) {
         const idsToExclude = scanInvs
           .filter((inv) => {
             const brand =
-              inv.company?.trim().toLowerCase() ||
+              cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
               (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
             return brand != null && excludedBrands.has(brand);
           })
@@ -363,10 +386,10 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Atomically mark complete ONLY if not cancelled — no TOCTOU gap.
-      // Uses updateMany with a status guard instead of read-then-write.
+      // Atomically mark complete ONLY if still RUNNING — no TOCTOU gap.
+      // Guards against both user cancellation AND recoverStuckScans race.
       await db.scan.updateMany({
-        where: { id: scan.id, organizationId: orgId, status: { not: "CANCELLED" } },
+        where: { id: scan.id, organizationId: orgId, status: "RUNNING" },
         data: {
           status: "COMPLETED",
           totalMessages: result.total_messages,
@@ -382,12 +405,20 @@ export async function POST(req: NextRequest) {
       revalidatePath("/invoices");
       revalidatePath("/scans");
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Worker dispatch failed";
+      const raw = e instanceof Error ? e.message : "Worker dispatch failed";
+      // Log the full error server-side for debugging
+      console.error(`[Scan ${scan.id}] dispatch error:`, raw);
+      // Sanitize: strip internal paths, connection strings, and stack traces
+      // before persisting — this message is returned to the client.
+      const safeMsg = raw
+        .replace(/(?:\/[^\s:]+)+/g, "[path]")           // file paths
+        .replace(/(?:postgres|mysql|redis|mongodb)\S+/gi, "[redacted]") // connection URIs
+        .slice(0, 300);
       await updateScanStatus(orgId, scan.id, {
         status: "FAILED",
         progress: 100,
-        progressMessage: msg,
-        errorMessage: msg,
+        progressMessage: safeMsg,
+        errorMessage: safeMsg,
         completedAt: new Date(),
       });
     }

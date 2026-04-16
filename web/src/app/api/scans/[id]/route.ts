@@ -17,6 +17,12 @@ export async function GET(
   }
 
   const { id } = await params;
+
+  // Validate path parameter format (cuid)
+  if (!id || typeof id !== "string" || id.length > 100 || !/^c[a-z0-9]{20,}$/i.test(id)) {
+    return NextResponse.json({ error: "Invalid scan ID format" }, { status: 400 });
+  }
+
   const scan = await getScanById(orgId, id);
 
   if (!scan) {
@@ -44,6 +50,12 @@ export async function DELETE(
   }
 
   const { id } = await params;
+
+  // Validate path parameter format (cuid)
+  if (!id || typeof id !== "string" || id.length > 100 || !/^c[a-z0-9]{20,}$/i.test(id)) {
+    return NextResponse.json({ error: "Invalid scan ID format" }, { status: 400 });
+  }
+
   const cancelled = await cancelScan(orgId, id);
 
   if (!cancelled) {

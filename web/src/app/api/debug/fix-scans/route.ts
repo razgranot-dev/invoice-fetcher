@@ -4,11 +4,17 @@ import { db } from "@/lib/db";
 
 /**
  * One-time fix: re-associate ALL invoices to scans based on createdAt timestamps.
- * Restricted to authenticated org owners only.
+ * Restricted to authenticated org owners in non-production environments.
  *
  * POST /api/debug/fix-scans
+ *
+ * SECURITY: Disabled in production to prevent accidental data manipulation.
  */
 export async function POST() {
+  if (process.env.NODE_ENV === "production") {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -23,10 +29,11 @@ export async function POST() {
     return NextResponse.json({ error: "No organization" }, { status: 403 });
   }
 
-  // Only fix scans belonging to the caller's organization
+  // Only fix scans belonging to the caller's organization (capped at 100)
   const scans = await db.scan.findMany({
     where: { organizationId: orgId, status: "COMPLETED" },
     orderBy: { createdAt: "desc" },
+    take: 100,
     select: {
       id: true,
       organizationId: true,

@@ -250,7 +250,109 @@ _VENDOR_NON_INVOICE_SUBJECTS: list[tuple[str, list[str]]] = [
     # Uber — ride notifications vs receipts
     ("uber.com", [
         "your driver is", "rate your", "how was your",
-        "your trip with", "arriving now",
+        "arriving now",
+    ]),
+    # Bolt — ride/delivery marketing vs trip/order receipts
+    ("bolt.eu", [
+        "your driver is", "rate your", "how was your",
+        "free ride", "promo code", "invite friends",
+    ]),
+    # Wolt — food delivery marketing vs order receipts
+    ("wolt.com", [
+        "free delivery", "new restaurants", "order now",
+        "your favorites", "promo code",
+    ]),
+    # DoorDash — delivery marketing vs order receipts
+    ("doordash.com", [
+        "dashpass", "free delivery", "order now",
+        "craving", "promo code",
+    ]),
+    # Booking.com — travel marketing vs booking/stay receipts
+    ("booking.com", [
+        "deal of the day", "explore", "recommended for you",
+        "save on your next", "homes you might like",
+        "discover", "getaway deals", "travel deals",
+    ]),
+    # Airbnb — travel/experience marketing vs actual stay receipts
+    ("airbnb.com", [
+        "explore homes", "travel ideas", "experiences near",
+        "get inspired", "recommended for you", "places to stay",
+    ]),
+    # Hotels.com — marketing vs stay receipts
+    ("hotels.com", [
+        "secret prices", "top deals", "members save",
+        "recommended for you", "explore",
+    ]),
+    # Agoda — marketing vs stay receipts
+    ("agoda.com", [
+        "flash sale", "deal of the day", "recommended for you",
+        "last-minute", "insider deals", "explore",
+    ]),
+    # AliExpress — heavy promotional marketing vs actual order receipts
+    ("aliexpress.com", [
+        "flash deal", "flash sale", "% off", "coupon",
+        "recommended for you", "items you may like",
+        "trending", "new arrivals", "wishlist",
+        "sale ends", "last chance", "clearance",
+        "top picks", "best seller", "back in stock",
+    ]),
+    # eBay — deal/browse marketing vs actual purchase receipts
+    ("ebay.com", [
+        "daily deals", "based on your", "items you might like",
+        "saved search", "price drop", "similar items",
+        "watching", "make an offer",
+    ]),
+    # Etsy — marketplace marketing vs purchase receipts
+    ("etsy.com", [
+        "shop the latest", "items you've been", "favorites for you",
+        "has shipped", "is on the way",
+    ]),
+    # Temu — heavy promotional marketing vs actual order receipts
+    ("temu.com", [
+        "flash sale", "% off", "coupon", "free shipping",
+        "recommended for you", "trending", "new arrivals",
+        "last chance", "clearance", "top picks",
+    ]),
+    # Shein — marketing vs actual order receipts
+    ("shein.com", [
+        "flash sale", "% off", "coupon", "free shipping",
+        "new arrivals", "trending", "sale ends",
+        "recommended for you", "style picks",
+    ]),
+    # ── Hotel chains — loyalty program marketing vs actual stay receipts ──
+    # These chains send heavy Honors/Bonvoy/Rewards marketing alongside
+    # legitimate folio/checkout/tax receipts. Patterns below are phrases
+    # that NEVER appear in receipt subjects.
+    ("hilton.com", [
+        "explore destinations", "discover new", "flash sale",
+        "member exclusive rate", "earn double points", "earn bonus",
+        "free night award", "redeem your points", "bonus offer",
+    ]),
+    ("marriott.com", [
+        "explore destinations", "discover new", "flash sale",
+        "member exclusive rate", "earn double points", "earn bonus",
+        "free night award", "redeem your points", "bonus offer",
+        "members save",
+    ]),
+    ("ihg.com", [
+        "explore destinations", "discover new", "flash sale",
+        "member exclusive rate", "earn double points", "earn bonus",
+        "free night award", "redeem your points", "bonus offer",
+    ]),
+    ("hyatt.com", [
+        "explore destinations", "discover new", "flash sale",
+        "member exclusive rate", "earn double points", "earn bonus",
+        "free night award", "redeem your points", "bonus offer",
+    ]),
+    ("accor.com", [
+        "explore destinations", "discover new", "flash sale",
+        "member exclusive", "earn bonus", "bonus offer",
+        "redeem your points",
+    ]),
+    ("radissonhotels.com", [
+        "explore destinations", "discover new", "flash sale",
+        "member exclusive", "earn bonus", "bonus offer",
+        "redeem your points",
     ]),
 ]
 
@@ -316,6 +418,23 @@ _SUBJECT_STRONG: list[tuple[str, int]] = [
     ("booking confirmation", 25),
     ("reservation confirmation", 25),
     ("travel receipt", 30),
+    # Ride-sharing receipts
+    ("ride receipt", 30),
+    ("trip receipt", 30),
+    ("your ride with", 25),
+    ("trip with uber", 30),
+    ("trip with lyft", 30),
+    # Food delivery / e-commerce order receipts
+    ("your order from", 25),
+    ("delivery receipt", 30),
+    # Hotel / stay receipts
+    ("your folio", 30),
+    ("checkout receipt", 30),
+    ("check-out receipt", 30),
+    ("stay receipt", 30),
+    ("your stay at", 25),
+    ("hotel receipt", 30),
+    ("hotel invoice", 30),
 ]
 
 # Weak subject keywords — present in invoices but also in many other emails
@@ -439,9 +558,31 @@ _INVOICE_SENDER_DOMAINS: dict[str, int] = {
     "wolt.com": 5,
     "bolt.eu": 5,
     "gett.com": 5,
+    # Food delivery
+    "tenbis.co.il": 5, "10bis.co.il": 5,
+    "doordash.com": 5,
+    "deliveroo.com": 5,
+    "grubhub.com": 5,
+    "cibus.co.il": 5,
     "shopify.com": 5,
     "squarespace.com": 5,
     "dropbox.com": 5,
+    # Hotels / OTAs
+    "hotels.com": 5,
+    "agoda.com": 5,
+    # Hotel chains
+    "hilton.com": 5,
+    "marriott.com": 5,
+    "ihg.com": 5,
+    "hyatt.com": 5,
+    "accor.com": 5,
+    "radissonhotels.com": 5,
+    # E-commerce
+    "aliexpress.com": 5,
+    "ebay.com": 5,
+    "etsy.com": 5,
+    "temu.com": 5,
+    "shein.com": 5,
     # Israeli telecom / utilities
     "partner.co.il": 5,
     "bezeq.co.il": 5,

@@ -9,16 +9,16 @@ from typing import Any
 # ── Amount patterns (ordered by specificity) ───────────────────────────────
 _PATTERNS: list[tuple[str, str, str]] = [
     # ₪XX.XX or ₪XX,XXX.XX
-    (r"₪\s?([\d,]+\.?\d*)", "₪", "high"),
+    (r"₪\s?([\d,]+\.?\d*)", "ILS", "high"),
     # XX.XX ₪
-    (r"([\d,]+\.?\d*)\s?₪", "₪", "high"),
+    (r"([\d,]+\.?\d*)\s?₪", "ILS", "high"),
     # XX.XX ש"ח / שקל
-    (r'([\d,]+\.?\d*)\s?(?:ש"ח|שקל)', "₪", "high"),
+    (r'([\d,]+\.?\d*)\s?(?:ש"ח|שקל)', "ILS", "high"),
     # $XX.XX or XX.XX$
-    (r"\$\s?([\d,]+\.?\d*)", "$", "high"),
-    (r"([\d,]+\.?\d*)\s?\$", "$", "high"),
+    (r"\$\s?([\d,]+\.?\d*)", "USD", "high"),
+    (r"([\d,]+\.?\d*)\s?\$", "USD", "high"),
     # Labeled: סכום/סה"כ/לתשלום/Total/Amount Due: XX.XX
-    (r'(?:סכום|סה"כ|לתשלום|total|amount\s*due|sum)\s*:?\s*([\d,]+\.?\d*)', "₪", "medium"),
+    (r'(?:סכום|סה"כ|לתשלום|total|amount\s*due|sum)\s*:?\s*([\d,]+\.?\d*)', "ILS", "medium"),
 ]
 
 # ── Subject cleaning patterns ──────────────────────────────────────────────
@@ -39,7 +39,7 @@ def extract_amount(text: str) -> dict[str, Any]:
     raw_match (str).
     """
     if not text:
-        return {"amount": None, "currency": "₪", "confidence": "low", "raw_match": ""}
+        return {"amount": None, "currency": "ILS", "confidence": "low", "raw_match": ""}
 
     found: list[tuple[float, str, str, str]] = []  # (value, currency, confidence, raw)
 
@@ -54,7 +54,7 @@ def extract_amount(text: str) -> dict[str, Any]:
                 continue
 
     if not found:
-        return {"amount": None, "currency": "₪", "confidence": "low", "raw_match": ""}
+        return {"amount": None, "currency": "ILS", "confidence": "low", "raw_match": ""}
 
     # Take the largest amount (likely the total)
     best = max(found, key=lambda x: x[0])

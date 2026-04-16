@@ -6,9 +6,25 @@ import { Receipt, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Suspense } from "react";
 
+/**
+ * Validate that callbackUrl is a relative path on this origin.
+ * Prevents open-redirect attacks where an attacker crafts a login link
+ * like /login?callbackUrl=https://evil.com and the user gets redirected
+ * there after authentication.
+ */
+function safeCallbackUrl(raw: string | null): string {
+  const fallback = "/dashboard";
+  if (!raw) return fallback;
+  // Must be a relative path starting with /
+  if (!raw.startsWith("/")) return fallback;
+  // Block protocol-relative URLs (//evil.com) and backslash tricks
+  if (raw.startsWith("//") || raw.startsWith("/\\")) return fallback;
+  return raw;
+}
+
 function LoginForm() {
   const searchParams = useSearchParams();
-  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+  const callbackUrl = safeCallbackUrl(searchParams.get("callbackUrl"));
   const error = searchParams.get("error");
 
   return (

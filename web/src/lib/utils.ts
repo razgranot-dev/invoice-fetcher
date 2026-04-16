@@ -12,6 +12,11 @@ const symbolToCode: Record<string, string> = {
   "£": "GBP",
 };
 
+/** Normalize a currency symbol or code to its ISO 4217 code. "₪" → "ILS", "$" → "USD", etc. */
+export function normalizeCurrency(raw: string): string {
+  return symbolToCode[raw] ?? raw;
+}
+
 export function formatCurrency(amount: number, currency = "ILS"): string {
   const code = symbolToCode[currency] ?? currency?.toUpperCase() ?? "ILS";
 
@@ -65,8 +70,10 @@ const NOISE_SUBDOMAINS = new Set([
   "noreply", "no-reply", "donotreply", "support", "help", "contact",
   "notifications", "notification", "notify", "alerts", "alert",
   "accounts", "account", "payments", "payment", "orders", "order",
-  "receipts", "receipt", "service", "services", "mailer", "news",
+  "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
   "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
+  // Hotel loyalty program suffixes — prevent "Marriott Bonvoy" vs "Marriott" duplicates
+  "bonvoy", "honors",
 ]);
 
 /** Canonical brand aliases — merge related domains under one supplier name */
@@ -122,4 +129,21 @@ export function cleanDomainName(raw: string): string {
   return brand
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Strip noise suffixes/prefixes from a company display name.
+ * "gett reciept" → "gett", "Amazon Billing" → "Amazon"
+ * Single-word names are never changed. Returns "" only if input is empty.
+ */
+export function cleanCompanyName(name: string): string {
+  if (!name) return "";
+  const words = name.split(/[\s\-_]+/).filter((w) => w.length > 0);
+  while (words.length > 1 && NOISE_SUBDOMAINS.has(words[words.length - 1].toLowerCase())) {
+    words.pop();
+  }
+  while (words.length > 1 && NOISE_SUBDOMAINS.has(words[0].toLowerCase())) {
+    words.shift();
+  }
+  return words.join(" ");
 }
