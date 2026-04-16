@@ -217,9 +217,17 @@ export async function POST(req: NextRequest) {
           tokenExpiry: connection.tokenExpiry,
         },
         { keywords, daysBack, unreadOnly },
-        async (progress, message) => {
-          await updateScanProgress(scan.id, progress, message);
-        }
+        (() => {
+          let lastWrite = 0;
+          return async (progress: number, message: string) => {
+            const now = Date.now();
+            // Throttle progress DB writes to max once per 2s; always write final 100%
+            if (progress >= 100 || now - lastWrite >= 2000) {
+              lastWrite = now;
+              await updateScanProgress(scan.id, progress, message);
+            }
+          };
+        })()
       );
 
       if (result.error) {
@@ -310,19 +318,24 @@ export async function POST(req: NextRequest) {
           (r) => r.bodyHtml && !r.gmailMessageId.startsWith("unknown-")
         );
         if (htmlBackfills.length > 0) {
-          const backfillResult = await db.$transaction(
-            htmlBackfills.map((r) =>
-              db.invoice.updateMany({
-                where: {
-                  organizationId: orgId,
-                  gmailMessageId: r.gmailMessageId,
-                  bodyHtml: null,
-                },
-                data: { bodyHtml: r.bodyHtml },
-              })
-            )
-          );
-          const filled = backfillResult.reduce((sum, r) => sum + r.count, 0);
+          // Parallel chunks — no $transaction lock needed (idempotent WHERE bodyHtml: null)
+          let filled = 0;
+          for (let bi = 0; bi < htmlBackfills.length; bi += 50) {
+            const chunk = htmlBackfills.slice(bi, bi + 50);
+            const chunkResults = await Promise.all(
+              chunk.map((r) =>
+                db.invoice.updateMany({
+                  where: {
+                    organizationId: orgId,
+                    gmailMessageId: r.gmailMessageId,
+                    bodyHtml: null,
+                  },
+                  data: { bodyHtml: r.bodyHtml },
+                })
+              )
+            );
+            filled += chunkResults.reduce((sum, r) => sum + r.count, 0);
+          }
           if (filled > 0) {
             console.log(`[Scan ${scan.id}] backfilled bodyHtml for ${filled} existing invoices`);
           }
@@ -334,19 +347,23 @@ export async function POST(req: NextRequest) {
           (r) => r.company && !r.gmailMessageId.startsWith("unknown-")
         );
         if (companyBackfills.length > 0) {
-          const companyResult = await db.$transaction(
-            companyBackfills.map((r) =>
-              db.invoice.updateMany({
-                where: {
-                  organizationId: orgId,
-                  gmailMessageId: r.gmailMessageId,
-                  company: { not: r.company },
-                },
-                data: { company: r.company },
-              })
-            )
-          );
-          const filled = companyResult.reduce((sum, r) => sum + r.count, 0);
+          let filled = 0;
+          for (let bi = 0; bi < companyBackfills.length; bi += 50) {
+            const chunk = companyBackfills.slice(bi, bi + 50);
+            const chunkResults = await Promise.all(
+              chunk.map((r) =>
+                db.invoice.updateMany({
+                  where: {
+                    organizationId: orgId,
+                    gmailMessageId: r.gmailMessageId,
+                    company: { not: r.company },
+                  },
+                  data: { company: r.company },
+                })
+              )
+            );
+            filled += chunkResults.reduce((sum, r) => sum + r.count, 0);
+          }
           if (filled > 0) {
             console.log(`[Scan ${scan.id}] backfilled company for ${filled} existing invoices`);
           }

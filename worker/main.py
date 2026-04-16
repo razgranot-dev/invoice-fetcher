@@ -7,6 +7,8 @@ Called by the Next.js app to execute Gmail scans and exports.
 Start: python -m worker.main (binds to 0.0.0.0:$PORT, default 8000)
 """
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import sys
@@ -42,7 +44,6 @@ from core.gmail_connector import GmailConnector
 from core.invoice_classifier import classify_results
 from core.amount_extractor import enrich_results
 from core.body_parser import BodyParser
-from core.attachment_handler import AttachmentHandler
 
 app = FastAPI(title="Invoice Fetcher Worker", version="0.1.0")
 
@@ -215,61 +216,90 @@ async def run_scan(req: ScanRequest):
 
             yield json.dumps({"progress": 3, "message": f"Found {total} emails to scan", "stage": "fetch"}) + "\n"
 
-            body_parser = BodyParser()
-            att_handler = AttachmentHandler(base_output_dir="output/invoices")
             results: list[dict] = []
 
-            # Phase 1: Fetch & parse emails (3% – 70%)
-            for i, msg_id in enumerate(msg_ids):
+            # Phase 1: Concurrent fetch & parse (3% – 70%)
+            # Uses thread pool for parallel Gmail API calls (5 workers ≈ 25 req/s,
+            # well within Gmail quota of 50 gets/s). Skips attachment binary download
+            # — not needed for classification, saves 200+ extra API calls.
+            _BATCH_SIZE = 20
+            _MSG_TIMEOUT = 30  # seconds per message
+
+            loop = asyncio.get_running_loop()
+            executor = ThreadPoolExecutor(max_workers=5)
+
+            def _fetch_and_parse(mid: str) -> dict | None:
                 try:
-                    msg = connector.get_message(msg_id)
+                    msg = connector.get_message(mid)
                     if not msg:
-                        continue
-
+                        return None
                     parsed = connector.parse_message(msg)
-
-                    saved_path = None
+                    parsed["saved_path"] = None
+                    # Keep attachment metadata but skip binary download
                     for att in parsed.get("attachments", []):
-                        if att.get("attachment_id"):
-                            att["data"] = connector.fetch_attachment_data(
-                                att["msg_id"], att["attachment_id"]
-                            )
-                        path = att_handler.save_attachment(
-                            att, parsed.get("sender", ""), parsed.get("date", "")
-                        )
-                        if path:
-                            saved_path = path
-                    parsed["saved_path"] = saved_path
-
-                    text = body_parser.extract_text(
+                        att.pop("data", None)
+                    bp = BodyParser()
+                    text = bp.extract_text(
                         parsed.get("body_text", ""), parsed.get("body_html", "")
                     )
                     parsed["notes"] = (
                         "\u05ea\u05d5\u05db\u05df \u05d7\u05e9\u05d1\u05d5\u05e0\u05d9\u05ea \u05e0\u05de\u05e6\u05d0 \u05d1\u05d2\u05d5\u05e3 \u05d4\u05d4\u05d5\u05d3\u05e2\u05d4"
-                        if body_parser.looks_like_invoice(text)
+                        if bp.looks_like_invoice(text)
                         else ""
                     )
-
-                    results.append(parsed)
+                    return parsed
                 except Exception as exc:
-                    logger.warning("Skipping message %s: %s", msg_id, exc)
+                    logger.warning("Skipping message %s: %s", mid, exc)
+                    return None
 
-                # Emit progress (outside try so it fires even on skip)
-                pct = 3 + int((i + 1) / total * 67)  # 3–70%
-                if total <= 50 or (i + 1) % 5 == 0 or (i + 1) == total:
+            try:
+                for batch_start in range(0, total, _BATCH_SIZE):
+                    batch_end = min(batch_start + _BATCH_SIZE, total)
+                    batch_ids = msg_ids[batch_start:batch_end]
+
+                    tasks = [
+                        asyncio.wait_for(
+                            loop.run_in_executor(executor, _fetch_and_parse, mid),
+                            timeout=_MSG_TIMEOUT,
+                        )
+                        for mid in batch_ids
+                    ]
+                    batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    for j, res in enumerate(batch_results):
+                        if isinstance(res, Exception):
+                            logger.warning("Message %s timed out or failed: %s", batch_ids[j], res)
+                        elif res is not None:
+                            results.append(res)
+
+                    pct = 3 + int(batch_end / total * 67)  # 3–70%
                     yield json.dumps({
                         "progress": pct,
-                        "message": f"Reading email {i + 1}/{total}",
+                        "message": f"Reading email {batch_end}/{total}",
                         "stage": "fetch",
                     }) + "\n"
+            finally:
+                executor.shutdown(wait=False)
 
             # Phase 2: Classify (70–85%)
             yield json.dumps({"progress": 72, "message": "Classifying results...", "stage": "classify"}) + "\n"
             classify_results(results)
 
-            # Phase 3: Enrich amounts (85–95%)
-            yield json.dumps({"progress": 87, "message": "Extracting amounts...", "stage": "enrich"}) + "\n"
-            enriched = enrich_results(results)
+            # Phase 3: Enrich amounts (87–95%) — chunked to report progress incrementally
+            # (Fixes "stuck at 87%" by emitting updates every 50 emails instead of one
+            #  giant silent batch.)
+            _ENRICH_BATCH = 50
+            enriched: list[dict] = []
+            n_results = len(results)
+            for ei in range(0, n_results, _ENRICH_BATCH):
+                chunk = results[ei:ei + _ENRICH_BATCH]
+                enriched.extend(enrich_results(chunk))
+                pct = 87 + int((ei + len(chunk)) / n_results * 8)  # 87–95%
+                yield json.dumps({
+                    "progress": pct,
+                    "message": f"Extracting amounts {ei + len(chunk)}/{n_results}",
+                    "stage": "enrich",
+                }) + "\n"
 
             # Strip binary data
             for r in enriched:
