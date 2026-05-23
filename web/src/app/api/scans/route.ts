@@ -391,6 +391,43 @@ export async function POST(req: NextRequest) {
           }
         }
 
+        // Lock in COMPLETED status BEFORE the optional backfill loops below.
+        // The backfills are quality-of-life refreshes for ALREADY-existing
+        // rows (skipDuplicates left their tier/html/company stale). If
+        // Vercel's after() deadline kills them mid-way, the new scan's data
+        // is already persisted by bulkCreate above — the scan must not stay
+        // RUNNING.
+        {
+          const earlyTierTotals = invoiceRows.reduce(
+            (acc, r) => {
+              acc[r.classificationTier] = (acc[r.classificationTier] ?? 0) + 1;
+              return acc;
+            },
+            {} as Record<string, number>
+          );
+          const earlyIncluded = invoiceRows.filter((r) => r.reportStatus === "INCLUDED").length;
+          const earlyExcluded = invoiceRows.filter((r) => r.reportStatus === "EXCLUDED").length;
+          const earlyParts = [
+            `Scanned ${result.total_messages}`,
+            `${earlyIncluded} in report`,
+          ];
+          if (earlyExcluded > 0) earlyParts.push(`${earlyExcluded} for review`);
+          if (earlyTierTotals.confirmed_invoice) earlyParts.push(`${earlyTierTotals.confirmed_invoice} confirmed`);
+          if (earlyTierTotals.likely_invoice) earlyParts.push(`${earlyTierTotals.likely_invoice} likely`);
+          await db.scan.updateMany({
+            where: { id: scan.id, organizationId: orgId, status: "RUNNING" },
+            data: {
+              status: "COMPLETED",
+              totalMessages: result.total_messages,
+              processedCount: result.invoices.length,
+              invoiceCount: earlyIncluded,
+              progress: 100,
+              progressMessage: `Complete — ${earlyParts.join(" · ")}`,
+              completedAt: new Date(),
+            },
+          });
+        }
+
         // Backfill classification fields for existing invoices. createMany
         // with skipDuplicates does NOT update existing rows, so when the
         // classifier improves (e.g., new Hebrew pattern that promotes a
@@ -489,11 +526,52 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Tier-broken-down summary — computed from the persistable set so
+      // it reflects what we actually saved, not raw worker output.
+      const tierTotals = invoiceRows.reduce(
+        (acc, r) => {
+          acc[r.classificationTier] = (acc[r.classificationTier] ?? 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+      const includedCount = invoiceRows.filter((r) => r.reportStatus === "INCLUDED").length;
+      const excludedCount = invoiceRows.filter((r) => r.reportStatus === "EXCLUDED").length;
+      const summaryParts = [
+        `Scanned ${result.total_messages}`,
+        `${includedCount} in report`,
+      ];
+      if (excludedCount > 0) summaryParts.push(`${excludedCount} for review`);
+      if (tierTotals.confirmed_invoice) summaryParts.push(`${tierTotals.confirmed_invoice} confirmed`);
+      if (tierTotals.likely_invoice) summaryParts.push(`${tierTotals.likely_invoice} likely`);
+      const summary = `Complete — ${summaryParts.join(" · ")}`;
+
+      // Mark COMPLETED *as early as possible* after the core persistence step,
+      // BEFORE the supplier-exclusion sweep. The supplier sweep is best-effort
+      // (the user can re-toggle excluded brands afterwards), but if Vercel's
+      // after() deadline strikes mid-sweep with the scan still RUNNING the
+      // user is stuck — recoverStuckScans then marks it FAILED even though
+      // every invoice row is fully persisted. Atomically guarded so a user
+      // cancellation racing in this window still wins.
+      await db.scan.updateMany({
+        where: { id: scan.id, organizationId: orgId, status: "RUNNING" },
+        data: {
+          status: "COMPLETED",
+          totalMessages: result.total_messages,
+          processedCount: result.invoices.length,
+          invoiceCount: includedCount,
+          progress: 100,
+          progressMessage: summary,
+          completedAt: new Date(),
+        },
+      });
+
       // ── Honour existing supplier exclusions ───────────────────────
-      // If the user previously unchecked a supplier, re-exclude its invoices
-      // so a re-scan doesn't silently re-include them.
-      // Uses company-first brand logic to avoid over-excluding shared domains
-      // (e.g., paypal.co.il serves Meta, Shopify, and generic PayPal invoices).
+      // Runs AFTER the scan is marked COMPLETED so a Vercel-timeout here
+      // doesn't strand the scan in RUNNING. If this loop is killed, the
+      // user just sees the supplier toggle "not applied yet" on their
+      // pre-excluded brands — recoverable by clicking the supplier chip
+      // off and on again.
       const excludedSuppliers = await db.supplier.findMany({
         where: { organizationId: orgId, isRelevant: false },
         select: { name: true },
@@ -521,42 +599,6 @@ export async function POST(req: NextRequest) {
           });
         }
       }
-
-      // Tier-broken-down summary — gives the user immediate signal about
-      // what the scan actually found vs. filtered out. Computed from the
-      // persistable set (what we saved), not raw worker output.
-      const tierTotals = invoiceRows.reduce(
-        (acc, r) => {
-          acc[r.classificationTier] = (acc[r.classificationTier] ?? 0) + 1;
-          return acc;
-        },
-        {} as Record<string, number>
-      );
-      const includedCount = invoiceRows.filter((r) => r.reportStatus === "INCLUDED").length;
-      const excludedCount = invoiceRows.filter((r) => r.reportStatus === "EXCLUDED").length;
-      const summaryParts = [
-        `Scanned ${result.total_messages}`,
-        `${includedCount} in report`,
-      ];
-      if (excludedCount > 0) summaryParts.push(`${excludedCount} for review`);
-      if (tierTotals.confirmed_invoice) summaryParts.push(`${tierTotals.confirmed_invoice} confirmed`);
-      if (tierTotals.likely_invoice) summaryParts.push(`${tierTotals.likely_invoice} likely`);
-      const summary = `Complete — ${summaryParts.join(" · ")}`;
-
-      // Atomically mark complete ONLY if still RUNNING — no TOCTOU gap.
-      // Guards against both user cancellation AND recoverStuckScans race.
-      await db.scan.updateMany({
-        where: { id: scan.id, organizationId: orgId, status: "RUNNING" },
-        data: {
-          status: "COMPLETED",
-          totalMessages: result.total_messages,
-          processedCount: result.invoices.length,
-          invoiceCount: includedCount,
-          progress: 100,
-          progressMessage: summary,
-          completedAt: new Date(),
-        },
-      });
 
       // Invalidate cached invoices page so new scan appears in dropdown
       revalidatePath("/invoices");

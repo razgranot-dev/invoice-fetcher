@@ -18,6 +18,7 @@ for (const line of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
 }
 
 const BASE = process.env.BASE_URL || 'http://localhost:3001';
+const DAYS_BACK = Number(process.env.DAYS_BACK || 30);
 const cookieName = BASE.startsWith('https://') ? '__Secure-authjs.session-token' : 'authjs.session-token';
 
 const { default: pg } = await import('pg');
@@ -36,11 +37,11 @@ console.log(`Cookie name: ${cookieName}  (len=${r.rows[0].sessionToken.length})`
 const t0 = Date.now();
 function ts() { return ((Date.now() - t0) / 1000).toFixed(2) + 's'; }
 
-console.log(`[${ts()}] POST ${BASE}/api/scans  daysBack=30 unreadOnly=false`);
+console.log(`[${ts()}] POST ${BASE}/api/scans  daysBack=${DAYS_BACK} unreadOnly=false`);
 const postRes = await fetch(`${BASE}/api/scans`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', Cookie: cookie },
-  body: JSON.stringify({ keywords: [], daysBack: 30, unreadOnly: false }),
+  body: JSON.stringify({ keywords: [], daysBack: DAYS_BACK, unreadOnly: false }),
 });
 const postBody = await postRes.json();
 console.log(`[${ts()}] HTTP ${postRes.status}`, JSON.stringify(postBody).slice(0, 300));
