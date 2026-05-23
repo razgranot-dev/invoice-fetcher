@@ -107,8 +107,11 @@ export function NewScanButton() {
             <label className="text-xs font-bold text-muted-foreground tracking-wider uppercase">
               Days back
             </label>
-            <p className="text-[11px] text-muted-foreground/70 mt-0.5 mb-2">
-              Use 365–730 for a full-year/two-year archive scan; 30 for quick incremental scans.
+            <p className="text-[11px] text-muted-foreground/70 mt-0.5">
+              30–180 days completes reliably on busy inboxes. 240+ days
+              may exceed the serverless function timeout — the worker
+              still classifies everything but persistence can fail;
+              multi-year archives currently need a self-hosted worker.
             </p>
             <input
               name="daysBack"
