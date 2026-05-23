@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Button } from "@/components/ui/button";
 import { requireOrganization } from "@/lib/session";
-import { getInvoices, getCompanyList, getScanListForFilter } from "@/lib/data/invoices";
+import { getInvoices, getScanListForFilter } from "@/lib/data/invoices";
 import { getSuppliers } from "@/lib/data/suppliers";
 import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
 import { InvoiceFilters } from "./filters";
@@ -34,15 +34,21 @@ export default async function InvoicesPage({
     scanId: params.scan || undefined,
   };
 
-  const [allInvoices, companies, dbSuppliers, scanList] = await Promise.all([
+  const [allInvoices, dbSuppliers, scanList] = await Promise.all([
     getInvoices(organizationId, filters),
-    getCompanyList(organizationId),
     getSuppliers(organizationId),
     getScanListForFilter(organizationId),
   ]);
 
-  const dbSupplierNames = new Set(dbSuppliers.map((s) => s.name.toLowerCase()));
-  const extraSuppliers: typeof dbSuppliers = [];
+  // Build supplier list FROM the current visible result set so the panel
+  // only shows brands that actually have invoices in this view. Previous
+  // behaviour merged in every org-wide supplier ever stored — that polluted
+  // the panel with stale brands from previous scans whose invoices were no
+  // longer in scope. We still consult `dbSuppliers` for the persisted
+  // `isRelevant` toggle (user's include/exclude preference must survive
+  // across scans), but we DO NOT add suppliers that have zero visible
+  // invoices in the current filter.
+  const dbSupplierByBrand = new Map(dbSuppliers.map((s) => [s.name.toLowerCase(), s]));
 
   const invoiceBrandCounts = new Map<string, { displayName: string; count: number }>();
   for (const inv of allInvoices) {
@@ -58,21 +64,25 @@ export default async function InvoicesPage({
     }
   }
 
-  for (const [brand, { displayName, count }] of invoiceBrandCounts) {
-    if (!dbSupplierNames.has(brand)) {
-      extraSuppliers.push({
-        id: `derived-${brand}`,
+  const allSuppliers = Array.from(invoiceBrandCounts.entries())
+    .map(([brand, { count }]) => {
+      const persisted = dbSupplierByBrand.get(brand);
+      return {
+        id: persisted?.id ?? `derived-${brand}`,
         name: brand,
-        isRelevant: true,
+        // Honour persisted user preference; default to included for brand-new suppliers.
+        isRelevant: persisted ? persisted.isRelevant : true,
         invoiceCount: count,
         organizationId,
-        createdAt: new Date(),
-      } as any);
-      dbSupplierNames.add(brand);
-    }
-  }
+        createdAt: persisted?.createdAt ?? new Date(),
+      } as (typeof dbSuppliers)[number];
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 
-  const allSuppliers = [...dbSuppliers, ...extraSuppliers];
+  // Company filter dropdown should also be scoped to the current view.
+  const companies = Array.from(invoiceBrandCounts.entries())
+    .map(([_brand, v]) => ({ name: v.displayName, count: v.count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
   const excludedBrands = new Set(
     allSuppliers

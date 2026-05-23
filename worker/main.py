@@ -137,7 +137,7 @@ class ScanRequest(BaseModel):
     refresh_token: str | None = Field(None, max_length=4096)
     token_expiry: str | None = Field(None, max_length=64)
     keywords: list[str] = Field(default=[], max_length=20)
-    days_back: int = Field(30, ge=1, le=365)
+    days_back: int = Field(30, ge=1, le=730)
     unread_only: bool = True
     scan_id: str = Field("", max_length=64)
 

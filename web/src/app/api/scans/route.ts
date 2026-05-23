@@ -201,9 +201,13 @@ export async function POST(req: NextRequest) {
         .filter((k: string) => k.length > 0)
         .slice(0, 20)
     : [];
-  const daysBack = typeof body.daysBack === "number" && Number.isInteger(body.daysBack) && body.daysBack >= 1 && body.daysBack <= 365
+  // Cap raised from 365 to 730 days (2 years) on 2026-05-23: users
+  // running annual archive scans for tax purposes need to reach receipts
+  // older than one year. Combined with the bumped _MAX_MESSAGES=5000 in
+  // the worker, 2-year scans now reliably capture multi-vendor history.
+  const daysBack = typeof body.daysBack === "number" && Number.isInteger(body.daysBack) && body.daysBack >= 1 && body.daysBack <= 730
     ? body.daysBack
-    : 30;
+    : 90;
   // Default to scanning the full inbox. The previous default of `true`
   // silently missed every invoice the user had already opened in Gmail —
   // the single biggest correctness gap reported by users ("the scan

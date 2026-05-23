@@ -107,12 +107,15 @@ export function NewScanButton() {
             <label className="text-xs font-bold text-muted-foreground tracking-wider uppercase">
               Days back
             </label>
+            <p className="text-[11px] text-muted-foreground/70 mt-0.5 mb-2">
+              Use 365–730 for a full-year/two-year archive scan; 30 for quick incremental scans.
+            </p>
             <input
               name="daysBack"
               type="number"
-              defaultValue={30}
+              defaultValue={90}
               min={1}
-              max={365}
+              max={730}
               className="mt-2 w-full rounded-xl border border-border/60 bg-white/60 backdrop-blur-sm px-4 py-3 text-sm outline-none transition-all duration-300 focus:border-primary/30 focus:ring-2 focus:ring-primary/10 focus:bg-white focus:shadow-md focus:shadow-primary/5 text-foreground"
             />
           </div>

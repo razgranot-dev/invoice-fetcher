@@ -24,7 +24,13 @@ _log = logging.getLogger(__name__)
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # seconds; doubled each attempt
-_MAX_MESSAGES = 2000     # upper bound on messages fetched per scan
+# Upper bound on candidate messages fetched per scan. Bumped from 2000 to 5000
+# on 2026-05-23 because users running multi-year archive scans (e.g.,
+# days_back=730 for tax purposes) were hitting the previous cap and silently
+# missing the oldest receipts. Five years of typical "broad invoice query"
+# traffic fits well under 5000 for a normal inbox; pagination is 500 per
+# round-trip so the worst case is 10 list-messages calls.
+_MAX_MESSAGES = 5000
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
