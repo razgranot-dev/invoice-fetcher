@@ -1,50 +1,36 @@
 import { db } from "@/lib/db";
-import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
+import { canonicalSupplierKey } from "@/lib/supplier-canonical";
 
 /**
- * Auto-creates supplier records using company-first brand logic:
- * each invoice's brand = company (lowercased) || normalizeDomain(senderDomain).
- * This ensures PayPal receipts with company="Meta" are grouped under "meta",
- * not under the shared "paypal" domain brand.
+ * Auto-creates supplier records using canonical brand logic from
+ * web/src/lib/supplier-canonical.ts. The SAME canonical resolution
+ * runs at invoice persistence, supplier-list derivation, the
+ * exclusion sweep, and here — guaranteeing that "Anthropic, PBC",
+ * "Anthropic", and "Claude Team" all collapse to one supplier row
+ * with aggregated counts.
+ *
  * Returns all suppliers with accurate invoice counts.
  *
- * Performance: Uses two GROUP BY queries instead of fetching all invoices.
- * - groupBy(company) for invoices with a company field
- * - groupBy(senderDomain) for invoices without a company field
- * This reduces data transfer from O(n) rows to O(unique_brands) rows.
+ * Performance: groupBy on (company, senderDomain) so the DB does the
+ * heavy aggregation; we then collapse the rows to canonical keys in
+ * JavaScript (cheap, O(unique brand pairs)).
  */
 export async function getSuppliers(organizationId: string) {
-  // GROUP BY company for invoices that have a company name set.
-  // This avoids fetching all invoice rows — the DB aggregates for us.
-  const [companyGroups, domainGroups] = await Promise.all([
-    db.invoice.groupBy({
-      by: ["company"],
-      where: { organizationId, company: { not: null } },
-      _count: true,
-    }),
-    // GROUP BY senderDomain for invoices WITHOUT a company name.
-    // These fall back to domain-based brand logic.
-    db.invoice.groupBy({
-      by: ["senderDomain"],
-      where: { organizationId, company: null, senderDomain: { not: null } },
-      _count: true,
-    }),
-  ]);
+  const groups = await db.invoice.groupBy({
+    by: ["company", "senderDomain"],
+    where: { organizationId },
+    _count: true,
+  });
 
-  // Compute brand counts from the two aggregated result sets
+  // Collapse to canonical brand keys.
   const brandCounts = new Map<string, number>();
-
-  for (const row of companyGroups) {
-    const brand = cleanCompanyName(row.company?.trim().toLowerCase() ?? "");
-    if (!brand) continue;
-    brandCounts.set(brand, (brandCounts.get(brand) ?? 0) + row._count);
-  }
-
-  for (const row of domainGroups) {
-    if (!row.senderDomain) continue;
-    const brand = normalizeDomain(row.senderDomain);
-    if (!brand) continue;
-    brandCounts.set(brand, (brandCounts.get(brand) ?? 0) + row._count);
+  for (const row of groups) {
+    const key = canonicalSupplierKey({
+      company: row.company,
+      senderDomain: row.senderDomain,
+    });
+    if (!key) continue;
+    brandCounts.set(key, (brandCounts.get(key) ?? 0) + row._count);
   }
 
   // Create supplier records for all discovered brands (idempotent)

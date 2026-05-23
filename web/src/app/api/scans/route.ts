@@ -6,7 +6,8 @@ import { createScan, getScans, updateScanStatus, updateScanProgress, recoverStuc
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
-import { normalizeDomain, cleanCompanyName, normalizeCurrency } from "@/lib/utils";
+import { normalizeCurrency } from "@/lib/utils";
+import { canonicalSupplierKey, canonicalDisplayName } from "@/lib/supplier-canonical";
 import { dispatchScan } from "@/lib/worker";
 
 // Vercel kills the function (and any `after()` work) at this deadline. The
@@ -334,26 +335,46 @@ export async function POST(req: NextRequest) {
         return "EXCLUDED";
       }
 
-      const invoiceRows = persistable.map((inv) => ({
-        gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        subject: inv.subject ?? "(no subject)",
-        sender: inv.sender ?? "",
-        senderDomain: extractDomain(inv.sender),
-        company: extractVendorFromSubject(inv.subject, inv.sender)
-          || normalizeCompanyName(inv.company || extractCompany(inv.sender) || "")
-          || undefined,
-        date: inv.date ? new Date(inv.date) : undefined,
-        amount: inv.amount ?? undefined,
-        currency: normalizeCurrency(inv.currency ?? "ILS"),
-        classificationTier: inv.classification_tier ?? "not_invoice",
-        classificationScore: inv.classification_score ?? 0,
-        classificationSignals: inv.classification_signals,
-        bodyHtml: inv.body_html || undefined,
-        hasAttachment: (inv.attachments?.length ?? 0) > 0,
-        attachmentPath: inv.saved_path || undefined,
-        notes: inv.notes || undefined,
-        reportStatus: defaultReportStatus(inv.classification_tier ?? "not_invoice"),
-      }));
+      const invoiceRows = persistable.map((inv) => {
+        const senderDomain = extractDomain(inv.sender);
+        // Build a tentative company string from the strongest signal
+        // available — PayPal-vendor subject extraction → existing
+        // company → fallback to the domain brand. THEN pipe the whole
+        // thing through the canonical resolver so the stored company
+        // is the user-visible canonical display name. This is the only
+        // place writing `company` so the supplier panel never sees
+        // duplicate variants again.
+        const rawCompany =
+          extractVendorFromSubject(inv.subject, inv.sender) ||
+          normalizeCompanyName(inv.company || extractCompany(inv.sender) || "") ||
+          undefined;
+        const canonicalKey = canonicalSupplierKey({
+          company: rawCompany ?? null,
+          senderDomain: senderDomain ?? null,
+        });
+        const canonicalCompany = canonicalKey
+          ? canonicalDisplayName(canonicalKey)
+          : (rawCompany || undefined);
+
+        return {
+          gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          subject: inv.subject ?? "(no subject)",
+          sender: inv.sender ?? "",
+          senderDomain,
+          company: canonicalCompany,
+          date: inv.date ? new Date(inv.date) : undefined,
+          amount: inv.amount ?? undefined,
+          currency: normalizeCurrency(inv.currency ?? "ILS"),
+          classificationTier: inv.classification_tier ?? "not_invoice",
+          classificationScore: inv.classification_score ?? 0,
+          classificationSignals: inv.classification_signals,
+          bodyHtml: inv.body_html || undefined,
+          hasAttachment: (inv.attachments?.length ?? 0) > 0,
+          attachmentPath: inv.saved_path || undefined,
+          notes: inv.notes || undefined,
+          reportStatus: defaultReportStatus(inv.classification_tier ?? "not_invoice"),
+        };
+      });
 
       if (persistable.length > 0) {
 
@@ -577,7 +598,12 @@ export async function POST(req: NextRequest) {
         select: { name: true },
       });
       if (excludedSuppliers.length > 0) {
-        const excludedBrands = new Set(
+        // Supplier names in the DB are stored as canonical keys. Match
+        // each invoice's canonical key against the excluded set so toggling
+        // "Apple" off excludes ALL apple-family invoices ("Apple", "Apple
+        // Services", "iCloud", etc.) — not just rows whose raw company
+        // happened to be the literal string "apple".
+        const excludedKeys = new Set(
           excludedSuppliers.map((s) => s.name.toLowerCase())
         );
         const scanInvs = await db.invoice.findMany({
@@ -586,10 +612,11 @@ export async function POST(req: NextRequest) {
         });
         const idsToExclude = scanInvs
           .filter((inv) => {
-            const brand =
-              cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
-              (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
-            return brand != null && excludedBrands.has(brand);
+            const key = canonicalSupplierKey({
+              company: inv.company,
+              senderDomain: inv.senderDomain,
+            });
+            return key && excludedKeys.has(key);
           })
           .map((inv) => inv.id);
         for (let i = 0; i < idsToExclude.length; i += 500) {

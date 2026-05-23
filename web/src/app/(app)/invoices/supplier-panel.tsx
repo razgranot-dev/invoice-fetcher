@@ -3,7 +3,7 @@
 import { useState, useEffect, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Check, Building2, Sparkles } from "lucide-react";
-import { cleanDomainName } from "@/lib/utils";
+import { canonicalDisplayName } from "@/lib/supplier-canonical";
 
 interface Supplier {
   id: string;
@@ -106,7 +106,7 @@ export function SupplierPanel({ suppliers: initial }: SupplierPanelProps) {
       {suppliers.length > 0 && (
         <div className="flex flex-wrap gap-2.5">
           {suppliers.map((s) => {
-            const displayName = cleanDomainName(s.name);
+            const displayName = canonicalDisplayName(s.name);
             return (
               <button
                 key={s.id}

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { requireOrganization } from "@/lib/session";
 import { getInvoices, getScanListForFilter } from "@/lib/data/invoices";
 import { getSuppliers } from "@/lib/data/suppliers";
-import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
+import { canonicalSupplierKey, canonicalDisplayName } from "@/lib/supplier-canonical";
 import { InvoiceFilters } from "./filters";
 import { SupplierPanel } from "./supplier-panel";
 import { InvoiceList } from "./invoice-list";
@@ -41,35 +41,34 @@ export default async function InvoicesPage({
   ]);
 
   // Build supplier list FROM the current visible result set so the panel
-  // only shows brands that actually have invoices in this view. Previous
-  // behaviour merged in every org-wide supplier ever stored — that polluted
-  // the panel with stale brands from previous scans whose invoices were no
-  // longer in scope. We still consult `dbSuppliers` for the persisted
-  // `isRelevant` toggle (user's include/exclude preference must survive
-  // across scans), but we DO NOT add suppliers that have zero visible
-  // invoices in the current filter.
-  const dbSupplierByBrand = new Map(dbSuppliers.map((s) => [s.name.toLowerCase(), s]));
+  // only shows brands that actually have invoices in this view. Brands are
+  // unified via canonicalSupplierKey() — that's the single function used by
+  // invoice persistence, the supplier panel, the company filter, and the
+  // supplier-exclusion sweep, so "Anthropic" + "Anthropic, PBC" + "Claude
+  // Team" collapse into one supplier chip with aggregated count.
+  const dbSupplierByKey = new Map(dbSuppliers.map((s) => [s.name.toLowerCase(), s]));
 
-  const invoiceBrandCounts = new Map<string, { displayName: string; count: number }>();
+  const invoiceBrandCounts = new Map<string, { count: number }>();
   for (const inv of allInvoices) {
-    const brand = cleanCompanyName(inv.company?.trim().toLowerCase() ?? "")
-      || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
-    if (!brand) continue;
-    const entry = invoiceBrandCounts.get(brand);
+    const key = canonicalSupplierKey({
+      company: inv.company,
+      senderDomain: inv.senderDomain,
+    });
+    if (!key) continue;
+    const entry = invoiceBrandCounts.get(key);
     if (entry) {
       entry.count++;
     } else {
-      const display = inv.company?.trim() || brand;
-      invoiceBrandCounts.set(brand, { displayName: display, count: 1 });
+      invoiceBrandCounts.set(key, { count: 1 });
     }
   }
 
   const allSuppliers = Array.from(invoiceBrandCounts.entries())
-    .map(([brand, { count }]) => {
-      const persisted = dbSupplierByBrand.get(brand);
+    .map(([key, { count }]) => {
+      const persisted = dbSupplierByKey.get(key);
       return {
-        id: persisted?.id ?? `derived-${brand}`,
-        name: brand,
+        id: persisted?.id ?? `derived-${key}`,
+        name: key,
         // Honour persisted user preference; default to included for brand-new suppliers.
         isRelevant: persisted ? persisted.isRelevant : true,
         invoiceCount: count,
@@ -77,25 +76,28 @@ export default async function InvoicesPage({
         createdAt: persisted?.createdAt ?? new Date(),
       } as (typeof dbSuppliers)[number];
     })
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => canonicalDisplayName(a.name).localeCompare(canonicalDisplayName(b.name)));
 
-  // Company filter dropdown should also be scoped to the current view.
+  // Company filter dropdown — one entry per canonical supplier, using the
+  // human display name.
   const companies = Array.from(invoiceBrandCounts.entries())
-    .map(([_brand, v]) => ({ name: v.displayName, count: v.count }))
+    .map(([key, v]) => ({ name: canonicalDisplayName(key), count: v.count }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
-  const excludedBrands = new Set(
+  const excludedKeys = new Set(
     allSuppliers
       .filter((s) => !s.isRelevant)
       .map((s) => s.name.toLowerCase())
   );
 
   const visibleInvoices =
-    excludedBrands.size > 0
+    excludedKeys.size > 0
       ? allInvoices.filter((inv) => {
-          const brand = cleanCompanyName(inv.company?.trim().toLowerCase() ?? "")
-            || (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
-          if (brand && excludedBrands.has(brand)) return false;
+          const key = canonicalSupplierKey({
+            company: inv.company,
+            senderDomain: inv.senderDomain,
+          });
+          if (key && excludedKeys.has(key)) return false;
           return true;
         })
       : allInvoices;
