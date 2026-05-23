@@ -107,10 +107,15 @@ _INSTANT_DISQUALIFY_SUBJECT: list[str] = [
     "marketplace",
 ]
 
-# Sender domains that NEVER send invoices — instant disqualification
+# Sender domains that NEVER send invoices — instant disqualification.
+# Note: `noreply.github.com` was REMOVED 2026-05-22 because GitHub Pro /
+# Sponsors / Premium subscription receipts come from exactly that sender.
+# Subject-based disqualify ("[github]", "pull request", "build failed", etc.
+# in _INSTANT_DISQUALIFY_SUBJECT) already filters PR/issue notifications
+# without blocking the receipts. `notifications.github.com` stays since
+# it's strictly notifications.
 _INSTANT_DISQUALIFY_SENDER: list[str] = [
     "notifications.github.com",
-    "noreply.github.com",
     "accounts.google.com",
     "notifications.google.com",
     "gitlab.com",
@@ -231,10 +236,13 @@ _VENDOR_NON_INVOICE_SUBJECTS: list[tuple[str, list[str]]] = [
         "discover weekly", "new releases", "your daily mix",
         "wrapped", "podcast", "what's new",
     ]),
-    # Adobe
+    # Adobe — note: "creative cloud" alone is NOT a disqualifier, because
+    # all real Adobe receipts say "Creative Cloud" in the subject. Use only
+    # marketing-shape phrases that never appear in receipts.
     ("adobe.com", [
         "getting started", "tips", "tutorial",
-        "what's new", "creative cloud", "product update",
+        "what's new", "product update",
+        "creative cloud tutorial", "creative cloud tips",
     ]),
     # Zoom
     ("zoom.us", [
@@ -376,6 +384,13 @@ _SUBJECT_STRONG: list[tuple[str, int]] = [
     ("פירוט חשבון", 20),
     ("אישור תשלום", 30),
     ("קבלה מ", 25),
+    # Construct form: "קבלת רכישה / קבלת תשלום" — receipt-of-X. Wolt and
+    # other Israeli vendors use this form heavily and the bare "קבלה" miss
+    # was leaving real receipts at "possible" (EXCLUDED) instead of likely.
+    ("קבלת רכישה", 30),
+    ("קבלת תשלום", 30),
+    ("קבלת חיוב", 25),
+    ("הקבלה שלך", 25),  # "your receipt" — Google Play / Apple Hebrew
     ("חיוב בסך", 25),
     ("פירוט עסקה", 25),
     ("חשבון טלפון", 25),
@@ -441,6 +456,7 @@ _SUBJECT_STRONG: list[tuple[str, int]] = [
 _SUBJECT_WEAK: list[tuple[str, int]] = [
     ("חשבונית", 12),
     ("קבלה", 12),
+    ("קבלת", 12),  # construct form — "קבלת רכישה / תשלום / חיוב"
     ("תשלום", 8),
     ("חיוב", 8),
     ("invoice", 12),
@@ -501,11 +517,23 @@ _AMOUNT_PATTERNS = [
 ]
 
 # Invoice/receipt number patterns
+#
+# NOTE: The English invoice/receipt pattern previously used three separate
+# `\s*` quantifiers (`\s*#?\s*:?\s*`). On long HTML-stripped bodies that
+# contain many "receipt"/"inv" candidate positions (e.g. Bolt ride
+# receipts, ~40KB stripped body, ~17 sec per call) the regex engine walked
+# the Cartesian product of those quantifiers and burned 15+ seconds per
+# email — silently — turning the whole scan into a "stuck at 70%" hang.
+#
+# Fix: collapse the structural separators into one bounded character class
+# `[\s#:]{0,8}`. Same matches, no exponential backtracking. Equivalent in
+# practice — any real invoice/receipt number reference has a small number
+# of separator chars between the keyword and the digits.
 _INVOICE_NUMBER_PATTERNS = [
-    (re.compile(r'(?:invoice|inv|receipt|rcpt)\s*#?\s*:?\s*\d{3,}', re.IGNORECASE), 20),
-    (re.compile(r'(?:חשבונית|קבלה)\s*(?:מס[\'.]?\s*)?:?\s*\d{3,}'), 20),
-    (re.compile(r'(?:order|הזמנה)\s*#?\s*:?\s*[A-Z0-9]{5,}', re.IGNORECASE), 15),
-    (re.compile(r'(?:transaction|עסקה)\s*(?:id|מספר)?\s*:?\s*[A-Z0-9]{6,}', re.IGNORECASE), 12),
+    (re.compile(r'(?:invoice|inv|receipt|rcpt)[\s#:]{0,8}\d{3,}', re.IGNORECASE), 20),
+    (re.compile(r'(?:חשבונית|קבלה)[\s\'.מס:]{0,8}\d{3,}'), 20),
+    (re.compile(r'(?:order|הזמנה)[\s#:]{0,8}[A-Z0-9]{5,}', re.IGNORECASE), 15),
+    (re.compile(r'(?:transaction|עסקה)[\sidמספר:]{0,8}[A-Z0-9]{6,}', re.IGNORECASE), 12),
 ]
 
 # ── Attachment signals ───────────────────────────────────────────────────────
@@ -679,9 +707,13 @@ _NEGATIVE_SUBJECT: list[tuple[str, int]] = [
     ("משלוח", -15),
 ]
 
-# Sender domains that rarely send invoices (penalty applied after scoring)
+# Sender domains that rarely send invoices (penalty applied after scoring).
+# Reduced 2026-05-22:
+#   • github.com -15 → -5 — GitHub Pro/Sponsor receipts come from github.com
+#     senders. Subject-based disqualify already kills PR notifications; the
+#     domain-level penalty was nudging legitimate receipts below threshold.
 _NEGATIVE_SENDER_DOMAINS: dict[str, int] = {
-    "github.com": -15,
+    "github.com": -5,
     "googlecloud.com": -30,
     # google.com removed — payments.google.com is a legitimate invoice sender
     # and the blanket -15 penalizes it; specific google subdomains are already
@@ -766,6 +798,9 @@ def is_screenshot_worthy(invoice: dict[str, Any]) -> tuple[bool, str]:
     return True, ""
 
 
+_BODY_REGEX_BUDGET = 60_000  # chars; defense against regex hot-spots on huge marketing bodies
+
+
 def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
     """Classify a single email with early disqualification and positive evidence gate.
 
@@ -776,6 +811,17 @@ def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
     body_text = (email_data.get("body_text") or "").strip()
     body_html = (email_data.get("body_html") or "").strip()
     attachments = email_data.get("attachments") or []
+
+    # Hard cap body size before any regex work. Some marketing emails embed
+    # 200-500KB of inline styles or tracking pixels; classification signals
+    # always sit near the top, so truncating preserves correctness while
+    # guaranteeing bounded regex runtime per email even if a future pattern
+    # introduces accidental backtracking. _INVOICE_NUMBER_PATTERNS already
+    # has bounded char-class quantifiers; this is defense in depth.
+    if len(body_text) > _BODY_REGEX_BUDGET:
+        body_text = body_text[:_BODY_REGEX_BUDGET]
+    if len(body_html) > _BODY_REGEX_BUDGET:
+        body_html = body_html[:_BODY_REGEX_BUDGET]
 
     # Normalize smart/curly quotes to straight quotes for matching
     subject_lower = subject.lower().replace("\u2018", "'").replace("\u2019", "'").replace("\u201c", '"').replace("\u201d", '"')
@@ -856,8 +902,9 @@ def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
         for kw, pts in _SUBJECT_WEAK:
             if kw.lower() in subject_lower:
                 _add("subject_weak", pts, kw)
-                # "invoice" and "receipt" in subject count as hard evidence
-                if kw.lower() in ("invoice", "receipt", "חשבונית", "קבלה"):
+                # "invoice" and "receipt" (English) + "חשבונית"/"קבלה"/"קבלת"
+                # (Hebrew, including construct form) count as hard evidence.
+                if kw.lower() in ("invoice", "receipt", "חשבונית", "קבלה", "קבלת"):
                     has_hard_evidence = True
                 break
 

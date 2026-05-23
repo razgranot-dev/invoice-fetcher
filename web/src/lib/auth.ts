@@ -55,6 +55,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         });
         if (!membership) return;
 
+        // Always overwrite scopes on update — otherwise a re-sign-in that
+        // silently drops the gmail.readonly consent (e.g., user unticked the
+        // Gmail box on Google's consent screen) leaves a stale DB row
+        // claiming the scope is still granted, and the next scan fails deep
+        // in the worker with a confusing 401/403.
+        const grantedScopes = account.scope?.split(" ") ?? [];
         await db.gmailConnection.upsert({
           where: {
             organizationId_email: {
@@ -68,6 +74,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             tokenExpiry: account.expires_at
               ? new Date(account.expires_at * 1000)
               : null,
+            scopes: grantedScopes,
             isActive: true,
             lastUsedAt: new Date(),
           },
@@ -79,7 +86,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
             tokenExpiry: account.expires_at
               ? new Date(account.expires_at * 1000)
               : null,
-            scopes: account.scope?.split(" ") ?? [],
+            scopes: grantedScopes,
           },
         });
       } catch (e) {

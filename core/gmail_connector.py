@@ -32,8 +32,10 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 def _is_auth_error(exc: Exception) -> bool:
     """Returns True if the exception indicates an auth failure that requires re-login.
 
-    Auth errors: token revoked, expired, invalid_grant, 401 Unauthorized.
-    These cannot be recovered by retrying — the user must re-authenticate.
+    Auth errors: token revoked, expired, invalid_grant, invalid_scope,
+    401 Unauthorized, 403 with insufficient permissions (token granted
+    without gmail.readonly). These cannot be recovered by retrying — the
+    user must re-authenticate AND grant the Gmail permission.
     """
     try:
         from google.auth.exceptions import RefreshError
@@ -43,19 +45,30 @@ def _is_auth_error(exc: Exception) -> bool:
         pass
     try:
         from googleapiclient.errors import HttpError
-        if isinstance(exc, HttpError) and exc.resp.status == 401:
-            return True
+        if isinstance(exc, HttpError):
+            status = exc.resp.status
+            if status == 401:
+                return True
+            # 403 from Gmail means the token doesn't have the gmail.readonly
+            # scope — the only fix is to re-grant consent. Treat as auth error
+            # so callers prompt the user to reconnect.
+            if status == 403 and "insufficient" in str(exc).lower():
+                return True
     except (ImportError, AttributeError):
         pass
     msg = str(exc).lower()
     return any(
         sig in msg for sig in (
             "invalid_grant",
+            "invalid_scope",
             "token has been expired",
             "token has been revoked",
             "invalid_client",
             "unauthorized_client",
             "access_denied",
+            "insufficient_scope",
+            "insufficient permission",
+            "access_token_scope_insufficient",
         )
     )
 
@@ -169,11 +182,60 @@ class GmailConnector:
           - Other error: (False, "ErrorType: msg")   — transient / config issue
         """
         try:
+            # IMPORTANT: pass scopes=None (NOT SCOPES). Google's token endpoint
+            # rejects refresh requests that include a `scope` parameter with
+            # `invalid_scope: Bad Request`. Credentials.refresh() forwards
+            # self._scopes into the refresh POST body, so any non-empty scopes
+            # here causes every stale-token refresh to fail. The grant's
+            # original scopes remain authoritative server-side; we don't need
+            # to re-assert them on refresh.
+            #
+            # NOTE: google-auth's from_authorized_user_info uses
+            # info.get("scopes", scopes), so a "scopes" key in the input dict
+            # OVERRIDES the function arg. Callers must omit "scopes" from the
+            # dict to actually skip the scope param on refresh.
             creds = Credentials.from_authorized_user_info(
-                json.loads(creds_json), SCOPES
+                json.loads(creds_json), None
             )
             if creds.expired and creds.refresh_token:
                 creds.refresh(Request())
+
+            # After refresh, verify the token actually has gmail.readonly.
+            # google-auth (2.48) does NOT populate Credentials.granted_scopes
+            # from the refresh response — both `scopes` and `granted_scopes`
+            # stay None when we pass scopes=None. So we hit Google's tokeninfo
+            # endpoint (~200ms) to read the real granted scopes.
+            #
+            # Why we need this check: if the user reconnected and did NOT
+            # tick the Gmail box on the Google consent screen, the refresh
+            # succeeds and returns a token with only openid/email/profile.
+            # The next Gmail API call then fails with a confusing
+            # 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT deep in the scan pipeline.
+            # Fail fast here with an actionable error.
+            try:
+                import urllib.request, urllib.error
+                req = urllib.request.Request(
+                    f"https://oauth2.googleapis.com/tokeninfo?access_token={creds.token}",
+                    method="GET",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    ti = json.loads(resp.read())
+                granted = set((ti.get("scope") or "").split())
+                required = "https://www.googleapis.com/auth/gmail.readonly"
+                if required not in granted:
+                    return False, (
+                        f"{GmailConnector.AUTH_ERROR_PREFIX} "
+                        "Gmail permission missing from this connection. "
+                        "Reconnect your Google account and check the Gmail box "
+                        "on the consent screen. "
+                        f"Granted scopes: {sorted(granted)}"
+                    )
+            except (urllib.error.URLError, OSError, ValueError) as _ti_err:
+                # tokeninfo is best-effort. If unreachable, fall through and
+                # let the Gmail API call surface the issue (handled by
+                # _is_auth_error's 403 INSUFFICIENT_SCOPES detection).
+                _log.warning("tokeninfo verification skipped: %s", _ti_err)
+
             import httplib2
             import google_auth_httplib2
             http = httplib2.Http(timeout=30)
@@ -359,49 +421,101 @@ class GmailConnector:
         "חשבון",
     ]
 
+    # Core invoice/receipt subject keywords used to widen the Gmail query.
+    # Kept intentionally short so the final query stays well under Gmail's
+    # ~2KB practical limit. Tokens are word-tokenized by Gmail so
+    # subject:invoice already matches "Invoice", "Invoices", "INVOICE", etc.
+    _QUERY_SUBJECT_KEYWORDS: list[str] = [
+        # English
+        "invoice", "receipt", "bill", "billing", "payment",
+        "purchase", "purchased", "order", "subscription", "renewal",
+        "charged", "paid",
+        # Hebrew
+        "חשבונית",
+        "קבלה",
+        "חיוב",
+        "תשלום",
+        "הזמנה",
+        "חשבון",
+    ]
+
+    # Local-part keywords for `from:` — Gmail tokenizes the From field, so
+    # `from:invoice` matches "invoice@example.com", "billing@invoices.x.com",
+    # "Invoice <noreply@apple.com>" display names, etc. Far broader and
+    # safer than listing every vendor domain.
+    _QUERY_FROM_KEYWORDS: list[str] = [
+        "invoice", "invoices", "receipt", "receipts",
+        "billing", "payments", "payment", "noreply", "no-reply",
+    ]
+
+    # Hard cap on query length. Gmail's q parameter has a practical upper
+    # bound around 2KB; longer queries can silently return empty results
+    # or 400 errors. We log a warning if we approach this.
+    _QUERY_LENGTH_WARN = 1800
+
     def build_query(self, keywords: list[str], days_back: int, unread_only: bool) -> str:
-        """Build Gmail search query from keywords, date range, sender domains, and subject patterns."""
+        """Build a slim, high-recall Gmail search query.
+
+        Strategy (changed 2026-05-22 — see QA report):
+          1. Gmail's built-in `category:purchases` catches almost all
+             transactional emails Google has already classified, including
+             new vendors we'd otherwise miss.
+          2. A short list of subject keywords (English + Hebrew) catches
+             explicit "Invoice / Receipt / חשבונית" subjects from any sender.
+          3. `filename:` clauses catch PDF attachments named invoice.pdf
+             even if the body has nothing.
+          4. `from:` local-part keywords catch billing@x.com, invoice@y.com,
+             receipts@z.com — independent of the specific vendor domain.
+          5. User-provided keywords are added verbatim.
+
+        This replaces the previous build_query, which enumerated ~80 sender
+        domains and ~30 quoted subject phrases, producing a ~2.5-3KB query
+        that could silently truncate against Gmail's q parameter limit and
+        miss new vendors. The classifier's per-email scoring (which still
+        uses the full sender-domain list) remains unchanged.
+        """
         parts = []
         if unread_only:
             parts.append("is:unread")
         since = (datetime.now() - timedelta(days=days_back)).strftime("%Y/%m/%d")
         parts.append(f"after:{since}")
 
-        # Build OR clauses: user keywords + vendor domains + subject patterns + filenames
-        clauses = []
+        clauses: list[str] = []
 
-        # User-provided keywords (search subject and body)
+        # 1. User-provided keywords — quoted so multi-word phrases stay intact
         seen_words: set[str] = set()
         for kw in keywords:
-            clauses.append(f'subject:"{kw}"')
-            clauses.append(f'"{kw}"')
-            seen_words.add(kw.strip().lower())
-            # For multi-word keywords, also search each word individually in subject.
-            # This ensures "אישור תשלום" also matches "הודעת תשלום" via the "תשלום" word.
-            words = kw.strip().split()
-            if len(words) > 1:
-                for word in words:
-                    if len(word) >= 3 and word.lower() not in seen_words:
-                        clauses.append(f'subject:"{word}"')
-                        seen_words.add(word.lower())
+            stripped = kw.strip()
+            if not stripped or stripped.lower() in seen_words:
+                continue
+            clauses.append(f'subject:"{stripped}"')
+            clauses.append(f'"{stripped}"')
+            seen_words.add(stripped.lower())
 
-        # Known invoice sender domains
-        for domain in self.INVOICE_SENDER_DOMAINS:
-            clauses.append(f"from:{domain}")
+        # 2. Gmail's built-in purchases category — high recall for transactions
+        clauses.append("category:purchases")
 
-        # Known invoice subject patterns
-        for pattern in self.INVOICE_SUBJECT_PATTERNS:
-            clauses.append(f'subject:"{pattern}"')
+        # 3. Core subject keywords (English + Hebrew)
+        for kw in self._QUERY_SUBJECT_KEYWORDS:
+            clauses.append(f"subject:{kw}")
 
-        # Attachment filename detection — catches emails where the attachment
-        # is named "invoice.pdf" / "חשבונית.pdf" even if body has no keywords
+        # 4. Attachment filename heuristics
         for fname_kw in self.INVOICE_FILENAME_KEYWORDS:
-            clauses.append(f'filename:"{fname_kw}"')
+            clauses.append(f"filename:{fname_kw}")
 
-        if clauses:
-            parts.append(f"({' OR '.join(clauses)})")
+        # 5. Sender local-part heuristics — broader than any domain list
+        for kw in self._QUERY_FROM_KEYWORDS:
+            clauses.append(f"from:{kw}")
 
-        return " ".join(parts)
+        query = " ".join(parts) + " (" + " OR ".join(clauses) + ")"
+
+        if len(query) > self._QUERY_LENGTH_WARN:
+            _log.warning(
+                "Gmail query length %d exceeds soft cap %d — consider trimming keyword lists",
+                len(query), self._QUERY_LENGTH_WARN,
+            )
+
+        return query
 
     def list_message_ids(
         self,

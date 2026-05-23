@@ -1,4 +1,20 @@
-"""Tests for GmailConnector.build_query — verifies filtering catches all invoice patterns."""
+"""Tests for GmailConnector.build_query — verifies filtering catches all invoice patterns.
+
+Rewritten 2026-05-22 to match the slimmer, higher-recall query strategy
+(category:purchases + subject keywords + filename keywords + from-local-part).
+The prior query enumerated ~80 vendor domains and ~30 quoted subject phrases,
+producing a ~2.5–3KB query that could silently truncate against Gmail's q
+parameter limit. The new query:
+  • is < 700 chars empty, < 2000 even with 20 user keywords
+  • uses Gmail's built-in `category:purchases` (catches new vendors for free)
+  • word-tokenized `subject:invoice` already matches "Invoice", "INVOICES", etc.
+  • `from:invoice` / `from:billing` match billing@anything.com — broader than
+    any explicit domain list and adapts to new vendors automatically.
+
+This file keeps the SEMANTIC guarantees that the previous tests asserted
+(Hebrew + English coverage, attachment filename detection, multi-word user
+keywords preserved as phrases) — only the literal query structure changed.
+"""
 
 import os
 import pytest
@@ -29,6 +45,7 @@ class TestBuildQueryKeywords:
 
     def test_single_keyword_in_subject_and_body(self, connector):
         q = connector.build_query(["invoice"], days_back=30, unread_only=False)
+        # User keywords are quoted to preserve any spaces
         assert 'subject:"invoice"' in q
         assert '"invoice"' in q
 
@@ -37,21 +54,14 @@ class TestBuildQueryKeywords:
         assert 'subject:"חשבונית"' in q
         assert '"חשבונית"' in q
 
-    def test_multi_word_keyword_splits_into_individual_terms(self, connector):
-        """Multi-word keywords should also search individual words in subject."""
+    def test_multi_word_user_keyword_preserved_as_phrase(self, connector):
+        """Multi-word user keywords are kept as a single quoted phrase. The
+        broad coverage that used to come from splitting them is now provided
+        by the always-on subject:תשלום / subject:invoice / category:purchases
+        anchors — see TestBuildQueryAnchors."""
         q = connector.build_query(["אישור תשלום"], days_back=30, unread_only=False)
-        # Phrase match preserved
         assert 'subject:"אישור תשלום"' in q
         assert '"אישור תשלום"' in q
-        # Individual words also searched in subject
-        assert 'subject:"אישור"' in q
-        assert 'subject:"תשלום"' in q
-
-    def test_single_word_keyword_not_split(self, connector):
-        """Single-word keywords should not produce extra subject split terms."""
-        q = connector.build_query(["invoice"], days_back=30, unread_only=False)
-        # subject:"invoice" appears once for user keyword; no extra split
-        assert q.count('subject:"invoice"') == 1
 
 
 class TestBuildQueryDateRange:
@@ -66,115 +76,112 @@ class TestBuildQueryDateRange:
         assert "is:unread" not in q_all
 
 
-class TestBuildQuerySenderDomains:
-    """Verify known sender domains are in the query."""
+class TestBuildQueryAnchors:
+    """Pin the four high-recall anchors in the new query."""
 
-    def test_apple_domain(self, connector):
+    def test_query_uses_category_purchases(self, connector):
+        """Gmail's purchases category catches every transactional email
+        Google already classified — including new vendors not in any list."""
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert "from:apple.com" in q
+        assert "category:purchases" in q
 
-    def test_paypal_domain(self, connector):
+    def test_query_has_english_subject_anchors(self, connector):
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert "from:paypal.com" in q
+        for kw in ("subject:invoice", "subject:receipt", "subject:billing", "subject:payment"):
+            assert kw in q, f"Missing anchor: {kw}"
 
-    def test_amazon_domain(self, connector):
+    def test_query_has_hebrew_subject_anchors(self, connector):
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert "from:amazon.com" in q
+        for kw in ("subject:חשבונית", "subject:קבלה", "subject:חיוב", "subject:תשלום"):
+            assert kw in q, f"Missing Hebrew anchor: {kw}"
 
-    def test_microsoft_domain(self, connector):
+    def test_query_has_from_local_part_anchors(self, connector):
+        """from:invoice matches invoice@anything.com — broader than any
+        explicit domain list and adapts to new vendors automatically."""
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert "from:microsoft.com" in q
-
-    def test_wix_domain(self, connector):
-        q = connector.build_query([], days_back=30, unread_only=False)
-        assert "from:wix.com" in q
-
-
-class TestBuildQuerySubjectPatterns:
-    """Verify subject patterns include both English and Hebrew patterns."""
-
-    def test_english_subject_patterns(self, connector):
-        q = connector.build_query([], days_back=30, unread_only=False)
-        assert 'subject:"invoice from"' in q
-        assert 'subject:"payment confirmation"' in q
-        assert 'subject:"billing statement"' in q
-
-    def test_hebrew_subject_patterns(self, connector):
-        q = connector.build_query([], days_back=30, unread_only=False)
-        assert 'subject:"חשבונית מס"' in q
-        assert 'subject:"אישור חיוב"' in q
-        assert 'subject:"חשבון חודשי"' in q
-        assert 'subject:"הודעת תשלום"' in q
+        for kw in ("from:invoice", "from:billing", "from:receipt", "from:payments"):
+            assert kw in q, f"Missing from-local-part anchor: {kw}"
 
 
 class TestBuildQueryFilenameSearch:
-    """Verify attachment filename search is included."""
+    """Verify attachment filename search is included (broader keyword search,
+    no longer quoted because Gmail tokenizes filenames anyway)."""
 
     def test_invoice_filename(self, connector):
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert 'filename:"invoice"' in q
+        assert "filename:invoice" in q
 
     def test_receipt_filename(self, connector):
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert 'filename:"receipt"' in q
+        assert "filename:receipt" in q
 
     def test_hebrew_invoice_filename(self, connector):
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert 'filename:"חשבונית"' in q
+        assert "filename:חשבונית" in q
 
     def test_hebrew_receipt_filename(self, connector):
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert 'filename:"קבלה"' in q
+        assert "filename:קבלה" in q
 
 
 class TestPreviouslyMissedPatterns:
     """
-    Regression tests for specific invoice patterns that were previously MISSED.
-    Each test describes a real-world invoice email that the old query would not find.
+    Regression tests — each describes a real-world invoice email that the
+    PRE-2026-05 (very early) query would not find. With the new query these
+    are caught either by an explicit subject anchor, a filename anchor, the
+    from-local-part anchor, or Gmail's purchases category.
     """
 
-    def test_bill_email_now_found(self, connector, default_keywords):
-        """'חשבון טלפון' — the word 'חשבון' (bill) was missing from defaults."""
+    def test_hebrew_bill_subject(self, connector, default_keywords):
+        """'חשבון טלפון' — 'חשבון' (bill) anchor present."""
         q = connector.build_query(default_keywords, days_back=90, unread_only=False)
-        assert 'subject:"חשבון"' in q or '"חשבון"' in q
+        assert "subject:חשבון" in q or 'subject:"חשבון"' in q
 
-    def test_charge_email_now_found(self, connector, default_keywords):
-        """'אישור חיוב' — 'חיוב' (charge) was missing from defaults."""
+    def test_hebrew_charge_subject(self, connector, default_keywords):
+        """'אישור חיוב' — 'חיוב' anchor present."""
         q = connector.build_query(default_keywords, days_back=90, unread_only=False)
-        assert 'subject:"חיוב"' in q or '"חיוב"' in q
+        assert "subject:חיוב" in q or 'subject:"חיוב"' in q
 
-    def test_payment_standalone_now_found(self, connector, default_keywords):
-        """'הודעת תשלום' — 'תשלום' was only part of phrase 'אישור תשלום'."""
+    def test_hebrew_payment_subject(self, connector, default_keywords):
+        """'הודעת תשלום' — 'תשלום' anchor present."""
         q = connector.build_query(default_keywords, days_back=90, unread_only=False)
-        assert 'subject:"תשלום"' in q or '"תשלום"' in q
+        assert "subject:תשלום" in q or 'subject:"תשלום"' in q
 
-    def test_billing_email_now_found(self, connector, default_keywords):
-        """'Your billing statement' — 'billing' was missing from defaults."""
+    def test_english_billing_subject(self, connector, default_keywords):
+        """'Your billing statement' — 'billing' anchor present."""
         q = connector.build_query(default_keywords, days_back=90, unread_only=False)
-        assert 'subject:"billing"' in q or '"billing"' in q
+        assert "subject:billing" in q or 'subject:"billing"' in q
 
-    def test_payment_english_now_found(self, connector, default_keywords):
-        """'Payment confirmation' — 'payment' was missing from defaults."""
+    def test_english_payment_subject(self, connector, default_keywords):
+        """'Payment confirmation' — 'payment' anchor present."""
         q = connector.build_query(default_keywords, days_back=90, unread_only=False)
-        assert 'subject:"payment"' in q or '"payment"' in q
+        assert "subject:payment" in q or 'subject:"payment"' in q
 
     def test_invoice_attachment_now_found(self, connector):
         """Email with 'invoice.pdf' attachment but no keyword in body."""
         q = connector.build_query([], days_back=90, unread_only=False)
-        assert 'filename:"invoice"' in q
-
-    def test_hebrew_tax_invoice_subject_now_found(self, connector):
-        """Subject 'חשבונית מס 12345' — Hebrew subject pattern was missing."""
-        q = connector.build_query([], days_back=90, unread_only=False)
-        assert 'subject:"חשבונית מס"' in q
-
-    def test_multi_word_keyword_individual_words(self, connector):
-        """'אישור תשלום' should also match emails with just 'תשלום' in subject."""
-        q = connector.build_query(["אישור תשלום"], days_back=30, unread_only=False)
-        assert 'subject:"תשלום"' in q
-        assert 'subject:"אישור"' in q
+        assert "filename:invoice" in q
 
     def test_query_uses_or_logic(self, connector, default_keywords):
         """All clauses must be OR'd so any match finds the email."""
         q = connector.build_query(default_keywords, days_back=30, unread_only=False)
         assert " OR " in q
+
+
+class TestQueryLengthBound:
+    """Pin the practical Gmail query-length ceiling. The old build_query
+    produced ~2.5-3 KB queries; longer queries silently return empty results."""
+
+    def test_empty_keywords_well_under_limit(self, connector):
+        q = connector.build_query([], days_back=30, unread_only=False)
+        assert len(q) < 1000, (
+            f"Empty-keyword query is {len(q)} chars; should be ~600. "
+            "If this fails, build_query has regrown the vendor list."
+        )
+
+    def test_max_user_keywords_under_limit(self, connector):
+        q = connector.build_query([f"kw{i}" for i in range(20)], days_back=30, unread_only=True)
+        assert len(q) < 2000, (
+            f"20-keyword query is {len(q)} chars — too close to Gmail's "
+            "~2KB q-parameter limit. Keep user keyword splitting bounded."
+        )

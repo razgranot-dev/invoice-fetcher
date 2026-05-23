@@ -32,12 +32,31 @@ export function NewScanButton() {
       const data = await res.json();
 
       if (!res.ok) {
-        alert(data.error || "Failed to create scan");
+        // When the server tells us to reconnect, offer a one-click path.
+        // confirm() returns true if the user clicks OK, false on Cancel.
+        if (data.action === "RECONNECT_GMAIL") {
+          const goSignIn = confirm(
+            `${data.error}\n\nClick OK to reconnect now.`
+          );
+          if (goSignIn) {
+            window.location.href = "/login";
+          }
+        } else {
+          alert(data.error || "Failed to create scan");
+        }
         return;
       }
 
       setShowForm(false);
-      router.refresh();
+      // Navigate to the scan detail page so the user sees live progress
+      // (phase, percent, current status) instead of staring at a closed
+      // dialog. The /scans/{id} page already renders <ScanProgress>.
+      const newScanId = data?.scan?.id;
+      if (newScanId) {
+        router.push(`/scans/${newScanId}`);
+      } else {
+        router.refresh();
+      }
     } finally {
       setLoading(false);
     }
@@ -102,7 +121,6 @@ export function NewScanButton() {
             <input
               name="unreadOnly"
               type="checkbox"
-              defaultChecked
               id="unreadOnly"
               className="rounded-md border-border h-4 w-4 accent-primary"
             />
@@ -110,7 +128,7 @@ export function NewScanButton() {
               htmlFor="unreadOnly"
               className="text-sm text-muted-foreground"
             >
-              Unread only
+              Unread only <span className="text-muted-foreground/50">— off by default scans your full inbox</span>
             </label>
           </div>
 

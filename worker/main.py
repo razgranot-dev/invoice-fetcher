@@ -178,14 +178,28 @@ async def run_scan(req: ScanRequest):
     import json
     from starlette.responses import StreamingResponse
 
-    creds_dict = {
+    # IMPORTANT: omit "scopes" from this dict. Google's token endpoint rejects
+    # refresh requests that include a `scope` param with `invalid_scope: Bad
+    # Request`, and google-auth's `from_authorized_user_info` prefers
+    # info["scopes"] over the function arg when building Credentials, so
+    # listing scopes here propagates straight into the failing refresh body.
+    # The grant's original scopes remain authoritative server-side.
+    #
+    # Preserve "expiry" when the web app sent one — otherwise google-auth
+    # synthesizes a past expiry (now - CLOCK_SKEW) and forces a refresh on
+    # every call, even when the access token is still valid for ~an hour.
+    creds_dict: dict[str, Any] = {
         "token": req.access_token,
         "refresh_token": req.refresh_token,
         "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
         "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
         "token_uri": "https://oauth2.googleapis.com/token",
-        "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
     }
+    if req.token_expiry:
+        # token_expiry arrives as ISO-8601 (e.g. "2026-05-17T08:35:26.000Z").
+        # google-auth parses "YYYY-MM-DDTHH:MM:SS" (no fractional, no Z).
+        normalized = req.token_expiry.rstrip("Z").split(".")[0]
+        creds_dict["expiry"] = normalized
 
     connector = GmailConnector()
     ok, result = connector.build_service_from_json(json.dumps(creds_dict))
@@ -255,16 +269,43 @@ async def run_scan(req: ScanRequest):
                     "stage": "fetch",
                 }) + "\n"
 
-            # Phase 2: Classify (70–85%)
+            # Phase 2: Classify (72%–85%) — chunked to keep the stream alive.
+            # Originally a single bulk call with no progress emission; a few
+            # pathological emails with regex-heavy bodies could silently take
+            # 15s+ each, making the UI appear stuck at 70%. Chunked yields
+            # plus per-message slow-log surface any future hot spot.
+            import time as _time
             yield json.dumps({"progress": 72, "message": "Classifying results...", "stage": "classify"}) + "\n"
-            classify_results(results)
+            from core.invoice_classifier import classify_email as _classify_one
+            _CLASSIFY_BATCH = 25
+            n_results = len(results)
+            classified = 0
+            for r in results:
+                _t = _time.perf_counter()
+                r.update(_classify_one(r))
+                _dur = _time.perf_counter() - _t
+                if _dur > 1.0:
+                    # Log only safe metadata — sender domain + subject prefix, no body
+                    sender = (r.get("sender") or "")[:60]
+                    subj = (r.get("subject") or "")[:60]
+                    logger.warning(
+                        "Slow classify (%.2fs) — sender=%r subject=%r",
+                        _dur, sender, subj,
+                    )
+                classified += 1
+                if classified % _CLASSIFY_BATCH == 0 or classified == n_results:
+                    pct = 72 + int(classified / n_results * 13)  # 72–85%
+                    yield json.dumps({
+                        "progress": pct,
+                        "message": f"Classifying {classified}/{n_results}",
+                        "stage": "classify",
+                    }) + "\n"
 
             # Phase 3: Enrich amounts (87–95%) — chunked to report progress incrementally
             # (Fixes "stuck at 87%" by emitting updates every 50 emails instead of one
             #  giant silent batch.)
             _ENRICH_BATCH = 50
             enriched: list[dict] = []
-            n_results = len(results)
             for ei in range(0, n_results, _ENRICH_BATCH):
                 chunk = results[ei:ei + _ENRICH_BATCH]
                 enriched.extend(enrich_results(chunk))
@@ -281,14 +322,40 @@ async def run_scan(req: ScanRequest):
                 for att in r.get("attachments", []):
                     att.pop("data", None)
 
+            # Tier counts surface what the scan actually found \u2014 without
+            # these the user sees "N candidates" and has no way to know
+            # whether they were real invoices or weak signals filtered out
+            # downstream.
+            tier_counts = {
+                "confirmed_invoice": 0,
+                "likely_invoice": 0,
+                "possible_financial_email": 0,
+                "not_invoice": 0,
+            }
+            for r in enriched:
+                t = r.get("classification_tier") or "not_invoice"
+                tier_counts[t] = tier_counts.get(t, 0) + 1
+
+            confirmed = tier_counts["confirmed_invoice"]
+            likely = tier_counts["likely_invoice"]
+            possible = tier_counts["possible_financial_email"]
+            not_inv = tier_counts["not_invoice"]
+            summary = (
+                f"Complete \u2014 scanned {total}: "
+                f"{confirmed} confirmed, {likely} likely, "
+                f"{possible} possible (review), {not_inv} not invoice"
+            )
+
             yield json.dumps({
                 "progress": 100,
-                "message": f"Complete \u2014 {len(enriched)} candidates from {total} emails",
+                "message": summary,
                 "stage": "done",
+                "tier_counts": tier_counts,
                 "result": {
                     "scan_id": req.scan_id,
                     "total_messages": total,
                     "invoices": enriched,
+                    "tier_counts": tier_counts,
                     "error": None,
                 },
             }) + "\n"

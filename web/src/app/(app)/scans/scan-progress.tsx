@@ -56,7 +56,10 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
         return;
       }
 
-      timer = setTimeout(tick, 2000);
+      // Poll every second so progress doesn't visibly freeze when the
+      // worker is mid-phase. The route handler's DB-write throttle is
+      // already 1s, so we're not generating extra DB load.
+      timer = setTimeout(tick, 1000);
     }
 
     tick();

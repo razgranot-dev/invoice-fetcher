@@ -2,12 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
-import { createScan, getScans, updateScanStatus, updateScanProgress } from "@/lib/data/scans";
+import { createScan, getScans, updateScanStatus, updateScanProgress, recoverStuckScans } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
 import { normalizeDomain, cleanCompanyName, normalizeCurrency } from "@/lib/utils";
 import { dispatchScan } from "@/lib/worker";
+
+// Vercel kills the function (and any `after()` work) at this deadline. The
+// scan flow runs entirely inside after(), so this MUST be at least as long
+// as the worst-case worker turnaround. With the v2 worker (regex hot-spot
+// fix + chunked classify), a 30-day / ~160-email scan completes in <10s,
+// but we leave generous headroom for larger inboxes. Requires Pro tier on
+// Vercel; on Hobby (10s cap) the after() body will be truncated and a
+// scan that takes longer will be left in RUNNING — recoverStuckScans
+// reclaims it after 15 minutes.
+export const maxDuration = 300; // seconds
 
 /** Extract clean domain from an email like "Name <user@domain.com>" or "user@domain.com" */
 function extractDomain(sender?: string): string | undefined {
@@ -159,6 +169,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Pre-flight: ensure the stored grant has gmail.readonly. If the user
+  // reconnected without ticking the Gmail box on Google's consent screen,
+  // the refresh_token only allows openid/email/profile and every scan would
+  // burn a worker round trip just to fail with 403 INSUFFICIENT_SCOPES.
+  // Surface it here with an actionable message before spawning anything.
+  const GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly";
+  if (!connection.scopes?.includes(GMAIL_READONLY)) {
+    return NextResponse.json(
+      {
+        error:
+          "Gmail permission missing from this connection. Reconnect your Google account and tick the Gmail box on the consent screen.",
+        action: "RECONNECT_GMAIL",
+        grantedScopes: connection.scopes ?? [],
+      },
+      { status: 400 }
+    );
+  }
+
   let body: any;
   try {
     body = await req.json();
@@ -176,7 +204,19 @@ export async function POST(req: NextRequest) {
   const daysBack = typeof body.daysBack === "number" && Number.isInteger(body.daysBack) && body.daysBack >= 1 && body.daysBack <= 365
     ? body.daysBack
     : 30;
-  const unreadOnly = typeof body.unreadOnly === "boolean" ? body.unreadOnly : true;
+  // Default to scanning the full inbox. The previous default of `true`
+  // silently missed every invoice the user had already opened in Gmail —
+  // the single biggest correctness gap reported by users ("the scan
+  // doesn't find my invoices"). Most users read their email; "unread
+  // only" is the niche power-user mode, not the default.
+  const unreadOnly = typeof body.unreadOnly === "boolean" ? body.unreadOnly : false;
+
+  // Reclaim any scans that have been RUNNING > 15 min before we evaluate
+  // the duplicate-scan guard. Without this, a single crashed/timed-out
+  // worker call leaves the org permanently unable to scan until the user
+  // happens to visit the /scans listing page (which is where the existing
+  // recovery sweep lives). Cheap UPDATE, safe to run on every POST.
+  await recoverStuckScans(orgId);
 
   // Duplicate scan prevention: block if a RUNNING scan already exists for this org
   const runningScan = await db.scan.findFirst({
@@ -219,11 +259,21 @@ export async function POST(req: NextRequest) {
         { keywords, daysBack, unreadOnly },
         (() => {
           let lastWrite = 0;
+          let lastProgress = -1;
           return async (progress: number, message: string) => {
             const now = Date.now();
-            // Throttle progress DB writes to max once per 2s; always write final 100%
-            if (progress >= 100 || now - lastWrite >= 2000) {
+            // Throttle progress DB writes — but never silence updates that
+            // cross a stage boundary, otherwise a long stage (classify,
+            // enrich) leaves the UI frozen on the previous stage's value
+            // for 10+ seconds. Stage boundary heuristic: 5+ point jump.
+            const crossedStage = lastProgress >= 0 && progress - lastProgress >= 5;
+            if (
+              progress >= 100 ||
+              crossedStage ||
+              now - lastWrite >= 1000
+            ) {
               lastWrite = now;
+              lastProgress = progress;
               await updateScanProgress(scan.id, progress, message);
             }
           };
@@ -264,27 +314,44 @@ export async function POST(req: NextRequest) {
 
       const persistable = result.invoices.filter(shouldPersist);
 
+      // Tier → default reportStatus. Project spec:
+      //   • confirmed_invoice / likely_invoice → INCLUDED (in the report)
+      //   • possible_financial_email           → EXCLUDED (needs review)
+      //   • not_invoice (only persisted if it has content signal)
+      //                                        → EXCLUDED (needs review)
+      // Excluded items still appear in the scan detail page under
+      // "for review", so the user can promote them. This stops the main
+      // report from being polluted with weak-signal emails while keeping
+      // them discoverable.
+      function defaultReportStatus(tier: string): "INCLUDED" | "EXCLUDED" {
+        if (tier === "confirmed_invoice" || tier === "likely_invoice") {
+          return "INCLUDED";
+        }
+        return "EXCLUDED";
+      }
+
+      const invoiceRows = persistable.map((inv) => ({
+        gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        subject: inv.subject ?? "(no subject)",
+        sender: inv.sender ?? "",
+        senderDomain: extractDomain(inv.sender),
+        company: extractVendorFromSubject(inv.subject, inv.sender)
+          || normalizeCompanyName(inv.company || extractCompany(inv.sender) || "")
+          || undefined,
+        date: inv.date ? new Date(inv.date) : undefined,
+        amount: inv.amount ?? undefined,
+        currency: normalizeCurrency(inv.currency ?? "ILS"),
+        classificationTier: inv.classification_tier ?? "not_invoice",
+        classificationScore: inv.classification_score ?? 0,
+        classificationSignals: inv.classification_signals,
+        bodyHtml: inv.body_html || undefined,
+        hasAttachment: (inv.attachments?.length ?? 0) > 0,
+        attachmentPath: inv.saved_path || undefined,
+        notes: inv.notes || undefined,
+        reportStatus: defaultReportStatus(inv.classification_tier ?? "not_invoice"),
+      }));
+
       if (persistable.length > 0) {
-        const invoiceRows = persistable.map((inv) => ({
-          gmailMessageId: inv.uid ?? `unknown-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          subject: inv.subject ?? "(no subject)",
-          sender: inv.sender ?? "",
-          senderDomain: extractDomain(inv.sender),
-          company: extractVendorFromSubject(inv.subject, inv.sender)
-            || normalizeCompanyName(inv.company || extractCompany(inv.sender) || "")
-            || undefined,
-          date: inv.date ? new Date(inv.date) : undefined,
-          amount: inv.amount ?? undefined,
-          currency: normalizeCurrency(inv.currency ?? "ILS"),
-          classificationTier: inv.classification_tier ?? "not_invoice",
-          classificationScore: inv.classification_score ?? 0,
-          classificationSignals: inv.classification_signals,
-          bodyHtml: inv.body_html || undefined,
-          hasAttachment: (inv.attachments?.length ?? 0) > 0,
-          attachmentPath: inv.saved_path || undefined,
-          notes: inv.notes || undefined,
-          reportStatus: "INCLUDED" as const,
-        }));
 
         // Insert new invoices (skipDuplicates for idempotency)
         const createResult = await bulkCreateInvoices(orgId, scan.id, invoiceRows);
@@ -292,22 +359,70 @@ export async function POST(req: NextRequest) {
 
         // ALWAYS re-associate ALL matching invoices to this scan.
         // createMany with skipDuplicates does NOT update existing rows,
-        // so we must explicitly set scanId on duplicates.
-        const messageIds = invoiceRows
-          .map((r) => r.gmailMessageId)
-          .filter((id) => !id.startsWith("unknown-"));
-        if (messageIds.length > 0) {
-          // Batch in chunks of 500 to avoid oversized IN clauses
-          for (let i = 0; i < messageIds.length; i += 500) {
-            const chunk = messageIds.slice(i, i + 500);
+        // so we must explicitly set scanId on duplicates. Split by the
+        // per-tier default reportStatus so a re-scan does NOT flip a
+        // previously-excluded "possible" invoice back to INCLUDED.
+        const includedIds = invoiceRows
+          .filter((r) => !r.gmailMessageId.startsWith("unknown-") && r.reportStatus === "INCLUDED")
+          .map((r) => r.gmailMessageId);
+        const excludedIds = invoiceRows
+          .filter((r) => !r.gmailMessageId.startsWith("unknown-") && r.reportStatus === "EXCLUDED")
+          .map((r) => r.gmailMessageId);
+
+        for (const [ids, status] of [
+          [includedIds, "INCLUDED" as const],
+          [excludedIds, "EXCLUDED" as const],
+        ] as const) {
+          if (ids.length === 0) continue;
+          for (let i = 0; i < ids.length; i += 500) {
+            const chunk = ids.slice(i, i + 500);
             const reassocResult = await db.invoice.updateMany({
               where: {
                 organizationId: orgId,
                 gmailMessageId: { in: chunk },
               },
-              data: { scanId: scan.id, reportStatus: "INCLUDED" },
+              data: { scanId: scan.id, reportStatus: status },
             });
-            console.log(`[Scan ${scan.id}] re-associated chunk ${i}-${i + chunk.length}: ${reassocResult.count} rows`);
+            console.log(`[Scan ${scan.id}] re-associated chunk ${i}-${i + chunk.length} (${status}): ${reassocResult.count} rows`);
+          }
+        }
+
+        // Backfill classification fields for existing invoices. createMany
+        // with skipDuplicates does NOT update existing rows, so when the
+        // classifier improves (e.g., new Hebrew pattern that promotes a
+        // Wolt receipt from "possible" to "likely"), the stored
+        // classificationTier / score / signals will drift out of sync with
+        // the freshly-computed reportStatus from re-association. Refresh
+        // those fields to keep the row internally consistent.
+        const classificationBackfills = invoiceRows.filter(
+          (r) => !r.gmailMessageId.startsWith("unknown-")
+        );
+        if (classificationBackfills.length > 0) {
+          let filled = 0;
+          for (let bi = 0; bi < classificationBackfills.length; bi += 50) {
+            const chunk = classificationBackfills.slice(bi, bi + 50);
+            const chunkResults = await Promise.all(
+              chunk.map((r) =>
+                db.invoice.updateMany({
+                  where: {
+                    organizationId: orgId,
+                    gmailMessageId: r.gmailMessageId,
+                  },
+                  // Cast: classificationSignals is typed loosely as
+                  // Record<string, unknown> from the worker JSON; Prisma's
+                  // JSON column accepts any serializable shape.
+                  data: {
+                    classificationTier: r.classificationTier,
+                    classificationScore: r.classificationScore,
+                    classificationSignals: r.classificationSignals as any,
+                  },
+                })
+              )
+            );
+            filled += chunkResults.reduce((sum, r) => sum + r.count, 0);
+          }
+          if (filled > 0) {
+            console.log(`[Scan ${scan.id}] refreshed classification fields for ${filled} invoices`);
           }
         }
 
@@ -403,6 +518,27 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Tier-broken-down summary — gives the user immediate signal about
+      // what the scan actually found vs. filtered out. Computed from the
+      // persistable set (what we saved), not raw worker output.
+      const tierTotals = invoiceRows.reduce(
+        (acc, r) => {
+          acc[r.classificationTier] = (acc[r.classificationTier] ?? 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+      const includedCount = invoiceRows.filter((r) => r.reportStatus === "INCLUDED").length;
+      const excludedCount = invoiceRows.filter((r) => r.reportStatus === "EXCLUDED").length;
+      const summaryParts = [
+        `Scanned ${result.total_messages}`,
+        `${includedCount} in report`,
+      ];
+      if (excludedCount > 0) summaryParts.push(`${excludedCount} for review`);
+      if (tierTotals.confirmed_invoice) summaryParts.push(`${tierTotals.confirmed_invoice} confirmed`);
+      if (tierTotals.likely_invoice) summaryParts.push(`${tierTotals.likely_invoice} likely`);
+      const summary = `Complete — ${summaryParts.join(" · ")}`;
+
       // Atomically mark complete ONLY if still RUNNING — no TOCTOU gap.
       // Guards against both user cancellation AND recoverStuckScans race.
       await db.scan.updateMany({
@@ -411,9 +547,9 @@ export async function POST(req: NextRequest) {
           status: "COMPLETED",
           totalMessages: result.total_messages,
           processedCount: result.invoices.length,
-          invoiceCount: persistable.length,
+          invoiceCount: includedCount,
           progress: 100,
-          progressMessage: `Complete — ${persistable.length} saved from ${result.total_messages} emails`,
+          progressMessage: summary,
           completedAt: new Date(),
         },
       });
@@ -425,12 +561,24 @@ export async function POST(req: NextRequest) {
       const raw = e instanceof Error ? e.message : "Worker dispatch failed";
       // Log the full error server-side for debugging
       console.error(`[Scan ${scan.id}] dispatch error:`, raw);
-      // Sanitize: strip internal paths, connection strings, and stack traces
-      // before persisting — this message is returned to the client.
-      const safeMsg = raw
-        .replace(/(?:\/[^\s:]+)+/g, "[path]")           // file paths
-        .replace(/(?:postgres|mysql|redis|mongodb)\S+/gi, "[redacted]") // connection URIs
-        .slice(0, 300);
+
+      // If the worker reported an AUTH_ERROR, extract it cleanly and tell the
+      // user to reconnect. AUTH_ERROR strings contain scope URLs which the
+      // generic path-stripping regex below would mangle into "[path]".
+      const authMatch = raw.match(/AUTH_ERROR:?\s*([^"}]+)/i);
+      let safeMsg: string;
+      if (authMatch) {
+        safeMsg = (
+          "Gmail authentication failed. " + authMatch[1].trim()
+        ).slice(0, 400);
+      } else {
+        // Sanitize: strip internal paths, connection strings, and stack
+        // traces before persisting — this message is returned to the client.
+        safeMsg = raw
+          .replace(/(?:\/[^\s:]+)+/g, "[path]")           // file paths
+          .replace(/(?:postgres|mysql|redis|mongodb)\S+/gi, "[redacted]") // connection URIs
+          .slice(0, 300);
+      }
       await updateScanStatus(orgId, scan.id, {
         status: "FAILED",
         progress: 100,
