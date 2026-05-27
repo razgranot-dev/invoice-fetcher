@@ -43,6 +43,16 @@ from core.invoice_classifier import classify_results
 from core.amount_extractor import enrich_results
 from core.body_parser import BodyParser
 
+# Route the worker's own logs through the project logger (console + file, with
+# the standard format used by core/* modules) so the scan funnel + per-reject
+# diagnostics actually surface in Render logs and output/logs/invoice_fetcher.log.
+# A bare logging.getLogger() has no handler attached, so those records were
+# being dropped. LOG_LEVEL (default INFO) gates them; set LOG_LEVEL=DEBUG to
+# also get a per-rejected-email reason line.
+from utils.logger import get_logger
+logger = get_logger("worker.main")
+logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+
 app = FastAPI(title="Invoice Fetcher Worker", version="0.1.0")
 
 # ── Bearer token auth middleware ─────────────────────────────────────────
@@ -230,6 +240,7 @@ async def run_scan(req: ScanRequest):
 
             body_parser = BodyParser()
             results: list[dict] = []
+            parse_failed = 0  # messages fetched OK but parse_message() raised
 
             # Phase 1: Fetch & parse emails (3% – 70%)
             # Uses Gmail Batch API — up to 50 messages per HTTP round trip,
@@ -260,7 +271,24 @@ async def run_scan(req: ScanRequest):
                         )
                         results.append(parsed)
                     except Exception as exc:
-                        logger.warning("Skipping message %s: %s", batch_ids[j], exc)
+                        parse_failed += 1
+                        # Safe metadata only — no body. The raw Gmail headers
+                        # give us the message id; sender/subject may be absent
+                        # if parsing failed early, so guard each lookup.
+                        hdrs = {}
+                        try:
+                            for h in msg.get("payload", {}).get("headers", []):
+                                n = (h.get("name") or "").lower()
+                                if n in ("from", "subject"):
+                                    hdrs[n] = (h.get("value") or "")[:80]
+                        except Exception:
+                            pass
+                        logger.warning(
+                            "PARSE FAILED — gmail_message_id=%s sender=%r subject=%r reason=%s",
+                            batch_ids[j] if j < len(batch_ids) else "?",
+                            hdrs.get("from", ""), hdrs.get("subject", ""),
+                            f"{type(exc).__name__}: {str(exc)[:120]}",
+                        )
 
                 pct = 3 + int(batch_end / total * 67)
                 yield json.dumps({
@@ -268,6 +296,25 @@ async def run_scan(req: ScanRequest):
                     "message": f"Reading email {batch_end}/{total}",
                     "stage": "fetch",
                 }) + "\n"
+
+            # Explicit fetch funnel — every message accounted for:
+            #   found = fetched_ok + still_failed + parse_failed
+            #   fetched_ok includes any recovered by the individual retry.
+            still_failed = connector.fetch_failed_final
+            recovered = connector.fetch_recovered
+            fetched_ok = total - still_failed
+            logger.info(
+                "[Scan %s] FETCH FUNNEL — found=%d fetched_ok=%d recovered_by_retry=%d "
+                "still_failed_after_retry=%d parse_failed=%d classified=%d",
+                req.scan_id, total, fetched_ok, recovered,
+                still_failed, parse_failed, len(results),
+            )
+            if connector.fetch_failed_ids:
+                logger.warning(
+                    "[Scan %s] %d message(s) unfetched after retry (ids+reasons): %s",
+                    req.scan_id, still_failed,
+                    "; ".join(f"{f['id']}:{f['reason']}" for f in connector.fetch_failed_ids[:20]),
+                )
 
             # Phase 2: Classify (72%–85%) — chunked to keep the stream alive.
             # Originally a single bulk call with no progress emission; a few
@@ -284,6 +331,17 @@ async def run_scan(req: ScanRequest):
                 _t = _time.perf_counter()
                 r.update(_classify_one(r))
                 _dur = _time.perf_counter() - _t
+                # Per-email rejection reason (DEBUG only — guarded so the
+                # signal formatting cost is skipped unless LOG_LEVEL=DEBUG).
+                if r.get("classification_tier") == "not_invoice" and logger.isEnabledFor(logging.DEBUG):
+                    from core.invoice_classifier import format_signal_breakdown as _fsb
+                    logger.debug(
+                        "[Scan %s] REJECTED not_invoice — sender=%r subject=%r signals=%s",
+                        req.scan_id,
+                        (r.get("sender") or "")[:80],
+                        (r.get("subject") or "")[:80],
+                        _fsb(r.get("classification_signals") or []),
+                    )
                 if _dur > 1.0:
                     # Log only safe metadata — sender domain + subject prefix, no body
                     sender = (r.get("sender") or "")[:60]
@@ -344,6 +402,11 @@ async def run_scan(req: ScanRequest):
                 f"Complete \u2014 scanned {total}: "
                 f"{confirmed} confirmed, {likely} likely, "
                 f"{possible} possible (review), {not_inv} not invoice"
+            )
+
+            logger.info(
+                "[Scan %s] TIER COUNTS — classified=%d | confirmed=%d likely=%d possible=%d not_invoice=%d",
+                req.scan_id, len(enriched), confirmed, likely, possible, not_inv,
             )
 
             yield json.dumps({

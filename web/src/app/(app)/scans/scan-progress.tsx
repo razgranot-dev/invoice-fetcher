@@ -90,12 +90,39 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
   };
 
   const pct = data.progress;
-  const isDone =
-    data.status === "COMPLETED" ||
-    data.status === "FAILED" ||
-    data.status === "CANCELLED";
 
-  if (isDone) return null;
+  // Surface a FAILED scan instead of silently vanishing. Previously this
+  // component returned null for ANY terminal status, so a scan that failed
+  // mid-flight just made the spinner disappear with no explanation — the
+  // error only showed if the user happened to be on the scan detail page
+  // when the server re-rendered. Now the failure (and its reason) is shown
+  // in both the list (compact) and detail views.
+  if (data.status === "FAILED") {
+    const msg = data.progressMessage || "The scan failed unexpectedly. Open the scan for details.";
+    if (compact) {
+      return (
+        <div className="flex items-center gap-2 text-xs text-destructive" title={msg}>
+          <XCircle className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate max-w-[240px]">Scan failed: {msg}</span>
+        </div>
+      );
+    }
+    return (
+      <div className="space-y-3 p-5 rounded-xl border border-destructive/30 bg-destructive/10">
+        <div className="flex items-center gap-2 text-sm font-bold text-destructive">
+          <XCircle className="h-5 w-5" />
+          Scan failed
+        </div>
+        <p className="text-xs text-destructive/90 break-words">{msg}</p>
+        <Button variant="outline" size="sm" onClick={() => router.refresh()}>
+          Reload
+        </Button>
+      </div>
+    );
+  }
+
+  // COMPLETED / CANCELLED → let the server-rendered page show the results.
+  if (data.status === "COMPLETED" || data.status === "CANCELLED") return null;
 
   if (compact) {
     return (

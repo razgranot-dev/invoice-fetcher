@@ -8,6 +8,12 @@ import { bulkCreateInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
 import { normalizeCurrency } from "@/lib/utils";
 import { canonicalSupplierKey, canonicalDisplayName } from "@/lib/supplier-canonical";
+import {
+  extractDomain,
+  extractCompany,
+  extractVendorFromSubject,
+  normalizeCompanyName,
+} from "@/lib/scan-company";
 import { dispatchScan } from "@/lib/worker";
 
 // Vercel kills the function (and any `after()` work) at this deadline. The
@@ -19,121 +25,6 @@ import { dispatchScan } from "@/lib/worker";
 // scan that takes longer will be left in RUNNING — recoverStuckScans
 // reclaims it after 15 minutes.
 export const maxDuration = 300; // seconds
-
-/** Extract clean domain from an email like "Name <user@domain.com>" or "user@domain.com" */
-function extractDomain(sender?: string): string | undefined {
-  if (!sender) return undefined;
-  const match = sender.match(/<([^>]+)>/) || sender.match(/[\w.+-]+@[\w.-]+/);
-  const email = match ? match[1] || match[0] : sender;
-  const parts = email.split("@");
-  return parts.length > 1 ? parts[1].replace(/[^a-zA-Z0-9.-]/g, "") : undefined;
-}
-
-/** Extract company/supplier name from sender.
- *  Priority: display name from "Company Name <email>" → cleaned domain brand.
- *  Strips common noise words like "noreply", "billing", "info".
- */
-function extractCompany(sender?: string): string | undefined {
-  if (!sender) return undefined;
-
-  // Try display name from "Company Name <email>" format
-  const nameMatch = sender.match(/^(.+?)\s*</);
-  if (nameMatch) {
-    const name = nameMatch[1].replace(/^["']|["']$/g, "").trim();
-    // Skip if the display name is just an email address
-    if (name && !name.includes("@") && name.length > 1) {
-      // Strip noise words like "receipt", "billing" from display names
-      const cleaned = cleanCompanyName(name);
-      if (cleaned) return cleaned;
-      // All words were noise — fall through to domain extraction
-    }
-  }
-
-  // Fall back to domain brand name
-  const domain = extractDomain(sender);
-  if (!domain) return undefined;
-
-  // Handle compound TLDs: paypal.co.il → paypal, example.com.au → example
-  let base = domain.toLowerCase();
-  const COMPOUND_TLDS = [
-    "co.il", "co.uk", "co.jp", "co.kr", "co.in", "co.za", "co.nz",
-    "com.au", "com.br", "com.mx", "com.ar", "com.tw", "com.sg",
-    "org.uk", "org.il", "net.il", "ac.il", "ac.uk", "gov.il",
-  ];
-  let tldStripped = false;
-  for (const tld of COMPOUND_TLDS) {
-    if (base.endsWith("." + tld)) {
-      base = base.slice(0, -(tld.length + 1));
-      tldStripped = true;
-      break;
-    }
-  }
-  if (!tldStripped) {
-    base = base.replace(/\.[a-z]{2,6}$/, "");
-  }
-
-  // Take the last meaningful part as the brand, skip noise subdomains
-  // Must match NOISE_SUBDOMAINS in utils.ts to avoid brand divergence
-  const NOISE = new Set([
-    "info", "billing", "invoices", "invoice", "mail", "email", "e-mail",
-    "noreply", "no-reply", "donotreply", "support", "help", "contact",
-    "notifications", "notification", "notify", "alerts", "alert",
-    "accounts", "account", "payments", "payment", "orders", "order",
-    "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
-    "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
-    // Hotel loyalty program suffixes — prevent "Marriott Bonvoy" vs "Marriott" duplicates
-    "bonvoy", "honors",
-  ]);
-  const parts = base.split(".").filter((p) => p && !NOISE.has(p));
-  const brand = parts.length > 0 ? parts[parts.length - 1] : base;
-  if (!brand || brand.length < 2) return undefined;
-  return brand.charAt(0).toUpperCase() + brand.slice(1);
-}
-
-/** For PayPal receipts, extract the actual vendor from the subject line.
- *  e.g. "Receipt for Your Payment to Shopify International" → "Shopify"
- *  Works for ALL PayPal vendors, not just hardcoded names.
- */
-function extractVendorFromSubject(subject?: string, sender?: string): string | undefined {
-  if (!subject || !sender) return undefined;
-  const domain = extractDomain(sender);
-  if (!domain) return undefined;
-  const domainLower = domain.toLowerCase();
-  // Only apply to PayPal senders
-  if (!domainLower.includes("paypal")) return undefined;
-
-  // Match PayPal receipt subject formats:
-  //   "Receipt for Your Payment to [VENDOR]"
-  //   "Receipt for Payment to [VENDOR]"
-  //   "You sent a payment to [VENDOR]"
-  //   "You paid [VENDOR]"
-  const m = subject.match(/(?:payment\s+to|paid\s+to|you\s+paid)\s+(.+)/i);
-  if (!m) return undefined;
-
-  // Clean vendor name: strip trailing "International", "Inc.", "Ltd.", etc.
-  let vendor = m[1]
-    .replace(/\s+international\s*$/i, "")
-    .replace(/,?\s*(?:inc\.?|ltd\.?|llc\.?|gmbh|s\.?a\.?|b\.?v\.?|pvt\.?)\s*$/i, "")
-    .trim();
-  if (!vendor) return undefined;
-
-  // Normalize known brand variants
-  const vendorLower = vendor.toLowerCase();
-  if (vendorLower.includes("meta") || vendorLower.includes("facebook")) return "Meta";
-  if (vendorLower.includes("shopify")) return "Shopify";
-  return vendor;
-}
-
-/** Normalize known company name variants to canonical brand names */
-function normalizeCompanyName(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.includes("facebookmail") || lower === "facebook" ||
-      lower === "instagram" ||
-      lower.includes("meta for business") || lower.includes("meta platforms")) {
-    return "Meta";
-  }
-  return name;
-}
 
 export async function GET() {
   const session = await auth();
@@ -318,6 +209,48 @@ export async function POST(req: NextRequest) {
       }
 
       const persistable = result.invoices.filter(shouldPersist);
+
+      // ── Scan funnel observability ───────────────────────────────────
+      // Make the whole pipeline auditable from logs: how many emails Gmail
+      // returned, how the classifier tiered them, how many we dropped (and
+      // why), and how many we will save. Without this the user only sees a
+      // final "N candidates" and can't tell whether a missing invoice was
+      // never fetched, was tiered too low, or was dropped by shouldPersist.
+      {
+        const found = result.total_messages;
+        const classified = result.invoices.length;
+        const tierBreakdown = result.invoices.reduce(
+          (acc: Record<string, number>, inv: any) => {
+            const t = inv.classification_tier ?? "not_invoice";
+            acc[t] = (acc[t] ?? 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>
+        );
+        const rejected = result.invoices.filter((inv: any) => !shouldPersist(inv));
+        console.log(
+          `[Scan ${scan.id}] funnel: found=${found} classified=${classified} ` +
+          `(confirmed=${tierBreakdown.confirmed_invoice ?? 0} likely=${tierBreakdown.likely_invoice ?? 0} ` +
+          `possible=${tierBreakdown.possible_financial_email ?? 0} not_invoice=${tierBreakdown.not_invoice ?? 0}) ` +
+          `rejected=${rejected.length} persistable=${persistable.length}`
+        );
+        // Per-email reject reason — capped so a 5000-email scan can't flood
+        // the log. Safe metadata only (sender + subject + tier + score), no body.
+        const REJECT_LOG_CAP = 40;
+        rejected.slice(0, REJECT_LOG_CAP).forEach((inv: any) => {
+          const score = inv.classification_score ?? 0;
+          const reason =
+            score < 5
+              ? `not_invoice score ${score} < 5`
+              : "not_invoice without content signal (sender domain alone)";
+          console.log(
+            `[Scan ${scan.id}] rejected: ${reason} | ${(inv.sender ?? "").slice(0, 60)} | ${(inv.subject ?? "").slice(0, 80)}`
+          );
+        });
+        if (rejected.length > REJECT_LOG_CAP) {
+          console.log(`[Scan ${scan.id}] (… ${rejected.length - REJECT_LOG_CAP} more rejected emails not logged)`);
+        }
+      }
 
       // Tier → default reportStatus. Project spec:
       //   • confirmed_invoice / likely_invoice → INCLUDED (in the report)
@@ -566,6 +499,16 @@ export async function POST(req: NextRequest) {
       if (tierTotals.confirmed_invoice) summaryParts.push(`${tierTotals.confirmed_invoice} confirmed`);
       if (tierTotals.likely_invoice) summaryParts.push(`${tierTotals.likely_invoice} likely`);
       const summary = `Complete — ${summaryParts.join(" · ")}`;
+
+      // Final, explicit funnel on the web side so the whole pipeline is
+      // auditable end-to-end from logs (worker logs the fetch/classify funnel;
+      // this logs the persist → report funnel). "shown_in_report" is what the
+      // user actually sees included by default.
+      console.log(
+        `[Scan ${scan.id}] PERSIST FUNNEL — found=${result.total_messages} ` +
+        `classified=${result.invoices.length} saved=${invoiceRows.length} ` +
+        `shown_in_report=${includedCount} for_review=${excludedCount}`
+      );
 
       // Mark COMPLETED *as early as possible* after the core persistence step,
       // BEFORE the supplier-exclusion sweep. The supplier sweep is best-effort

@@ -43,8 +43,11 @@ class TestCreateInvoiceReport:
         doc = Document(path)
         table = doc.tables[0]
         last_row = table.rows[-1]
-        total_cell = last_row.cells[3].text
-        assert "298.80" in total_cell
+        # The report table is 3 columns (date, amount, supplier); the total
+        # lives in the amount cell. Check the whole summary row so the test is
+        # robust to column-layout changes rather than pinning a fixed index.
+        row_text = " ".join(c.text for c in last_row.cells)
+        assert "298.80" in row_text
 
     def test_empty_rows_returns_none(self, tmp_exports):
         result = create_invoice_report([], output_dir=str(tmp_exports))

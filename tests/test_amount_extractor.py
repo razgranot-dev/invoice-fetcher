@@ -7,7 +7,9 @@ class TestExtractAmount:
     def test_shekel_symbol_before(self):
         result = extract_amount("הסכום לתשלום: ₪89.00")
         assert result["amount"] == 89.00
-        assert result["currency"] == "₪"
+        # extract_amount returns ISO 4217 codes, not symbols (the web layer's
+        # normalizeCurrency expects ISO). ₪ → "ILS".
+        assert result["currency"] == "ILS"
         assert result["confidence"] == "high"
 
     def test_shekel_symbol_after(self):
@@ -23,7 +25,7 @@ class TestExtractAmount:
     def test_english_dollar(self):
         result = extract_amount("Total: $67.30")
         assert result["amount"] == 67.30
-        assert result["currency"] == "$"
+        assert result["currency"] == "USD"
         assert result["confidence"] == "high"
 
     def test_labeled_amount_hebrew(self):

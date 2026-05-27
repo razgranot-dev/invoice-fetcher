@@ -418,6 +418,7 @@ _SUBJECT_STRONG: list[tuple[str, int]] = [
     ("payment successful", 25),
     ("charge receipt", 30),
     ("transaction receipt", 30),
+    ("payment receipt", 30),
     ("transaction completed", 20),
     ("renewal confirmation", 25),
     ("renewal receipt", 30),
@@ -568,6 +569,13 @@ _INVOICE_SENDER_DOMAINS: dict[str, int] = {
     "aws.amazon.com": 5, "amazonaws.com": 5,
     "microsoft.com": 5, "azure.com": 5,
     "wix.com": 5,
+    # Developer hosting/PaaS that bill monthly — were missing, so minimal
+    # receipts (amount-only body) dropped below threshold. Vercel was already
+    # listed below; Render/Netlify/Fly/Railway were not.
+    "render.com": 5,
+    "netlify.com": 5,
+    "fly.io": 5,
+    "railway.app": 5,
     "spotify.com": 5,
     "netflix.com": 5,
     "adobe.com": 5,
@@ -897,16 +905,29 @@ def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
             has_hard_evidence = True
             break
 
-    # 2b. Subject weak keywords (if no strong match)
+    # 2b. Subject weak keywords (if no strong match). Scan ALL weak keywords,
+    # not just the first hit. The previous `break`-on-first-match meant a
+    # low-value keyword earlier in the subject (e.g. "payment"/"billing", 5 pts)
+    # shadowed a hard-evidence keyword later in the same subject (e.g.
+    # "invoice"/"receipt", 12 pts) — so "Monthly billing invoice" scored only
+    # 5 pts and, lacking other hard evidence, was demoted to not_invoice and
+    # silently dropped. Now we score the single best match and flag hard
+    # evidence if ANY matched keyword qualifies, independent of ordering.
     if not any(s["signal"] == "subject_strong" for s in signals):
+        _HARD_WEAK = ("invoice", "receipt", "חשבונית", "קבלה", "קבלת")
+        best_kw: str | None = None
+        best_pts = -1
+        weak_hard = False
         for kw, pts in _SUBJECT_WEAK:
             if kw.lower() in subject_lower:
-                _add("subject_weak", pts, kw)
-                # "invoice" and "receipt" (English) + "חשבונית"/"קבלה"/"קבלת"
-                # (Hebrew, including construct form) count as hard evidence.
-                if kw.lower() in ("invoice", "receipt", "חשבונית", "קבלה", "קבלת"):
-                    has_hard_evidence = True
-                break
+                if pts > best_pts:
+                    best_pts, best_kw = pts, kw
+                if kw.lower() in _HARD_WEAK:
+                    weak_hard = True
+        if best_kw is not None:
+            _add("subject_weak", best_pts, best_kw)
+            if weak_hard:
+                has_hard_evidence = True
 
     # 2c. Body strong keywords
     body_strong_hits = 0

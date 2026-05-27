@@ -91,6 +91,13 @@ class GmailConnector:
         self.service: Any = None
         self._client_id = os.getenv("GOOGLE_CLIENT_ID")
         self._client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        # Per-scan batch-fetch telemetry (a fresh connector is created per scan).
+        # Lets the worker report an honest funnel: how many sub-requests the
+        # batch endpoint dropped, how many we recovered via individual retry,
+        # and which IDs still failed (with a safe reason — no body).
+        self.fetch_recovered = 0          # messages refetched individually after a batch drop
+        self.fetch_failed_final = 0       # messages still missing after the individual retry
+        self.fetch_failed_ids: list[dict] = []  # [{id, reason}] for still-failed (capped)
 
     # ── בדיקות מצב ───────────────────────────────────────────────────
 
@@ -606,6 +613,45 @@ class GmailConnector:
                     time.sleep(delay)
                     continue
                 raise
+
+        # Recover sub-requests that failed transiently INSIDE the batch. The
+        # Gmail batch endpoint frequently returns per-message 429/5xx for a
+        # subset of IDs while the overall batch call succeeds (200). Those
+        # entries are left None above and, before this pass, were silently
+        # dropped by the worker — a real, intermittent "missing invoices" cause
+        # (the same inbox skipped 84 then 48 messages on two consecutive runs).
+        # Retry the still-missing IDs individually; self.get_message → _exec
+        # already applies transient-retry/backoff per request.
+        missing = [(i, mid) for i, mid in enumerate(msg_ids) if results[i] is None]
+        if missing:
+            _log.warning(
+                "Batch left %d/%d messages unfetched — retrying individually",
+                len(missing), len(msg_ids),
+            )
+            recovered = 0
+            for i, mid in missing:
+                try:
+                    results[i] = self.get_message(mid)
+                    recovered += 1
+                except Exception as exc:
+                    # Still failed after the individual retry. Record safe
+                    # metadata ONLY — the message body was never fetched, so the
+                    # most we can name is the Gmail message ID + the error type.
+                    self.fetch_failed_final += 1
+                    if len(self.fetch_failed_ids) < 100:
+                        self.fetch_failed_ids.append({
+                            "id": mid,
+                            "reason": f"{type(exc).__name__}: {str(exc)[:160]}",
+                        })
+                    _log.warning(
+                        "STILL FAILED after retry — gmail_message_id=%s reason=%s",
+                        mid, f"{type(exc).__name__}: {str(exc)[:160]}",
+                    )
+            self.fetch_recovered += recovered
+            _log.info(
+                "Batch recovery — recovered=%d still_failed=%d (of %d dropped sub-requests)",
+                recovered, len(missing) - recovered, len(missing),
+            )
 
         return results
 
