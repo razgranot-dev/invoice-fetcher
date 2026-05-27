@@ -96,6 +96,14 @@ export default async function ScansPage() {
                   {scan.status === "RUNNING" && (
                     <ScanProgress scanId={scan.id} compact />
                   )}
+                  {scan.status === "FAILED" && (scan.errorMessage || scan.progressMessage) && (
+                    <span
+                      className="text-xs text-destructive/80 truncate max-w-[260px] hidden sm:inline"
+                      title={scan.errorMessage ?? scan.progressMessage ?? ""}
+                    >
+                      {(scan.errorMessage ?? scan.progressMessage ?? "").slice(0, 70)}
+                    </span>
+                  )}
                   {scan.status === "COMPLETED" && (() => {
                     const { included, excluded } = scan._reportCounts;
                     const saved = included + excluded;

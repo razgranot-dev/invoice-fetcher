@@ -15,6 +15,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { LocalTime } from "@/components/shared/local-time";
 import { ScanProgress } from "../scan-progress";
+import { RetryScanButton } from "../retry-scan-button";
 
 const statusConfig = {
   PENDING: { icon: Clock, label: "Pending", variant: "outline" as const },
@@ -55,10 +56,19 @@ export default async function ScanDetailPage({
           <ArrowLeft className="h-4 w-4" />
         </Link>
         <PageHeader title="Scan Details" />
-        <Badge variant={config.variant} className="ml-auto">
-          <StatusIcon className={`h-3 w-3 mr-1 ${scan.status === "RUNNING" ? "animate-spin" : ""}`} />
-          {config.label}
-        </Badge>
+        <div className="ml-auto flex items-center gap-3">
+          {(scan.status === "FAILED" || scan.status === "COMPLETED" || scan.status === "CANCELLED") && (
+            <RetryScanButton
+              keywords={scan.keywords}
+              daysBack={scan.daysBack}
+              unreadOnly={scan.unreadOnly}
+            />
+          )}
+          <Badge variant={config.variant}>
+            <StatusIcon className={`h-3 w-3 mr-1 ${scan.status === "RUNNING" ? "animate-spin" : ""}`} />
+            {config.label}
+          </Badge>
+        </div>
       </div>
 
       {/* Live progress for running scans */}
