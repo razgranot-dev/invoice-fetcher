@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { FileText, Loader2, CheckCircle2, Images, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useInvoiceSelection } from "./selection-context";
 
 interface ExportWordButtonProps {
   filters: { search?: string; tier?: string; company?: string; scanId?: string; reportStatus?: string };
@@ -22,6 +23,7 @@ interface ActiveExport {
 
 export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
   const router = useRouter();
+  const { selectedIds, clear: clearSelection } = useInvoiceSelection();
   const [activeExports, setActiveExports] = useState<ActiveExport[]>([]);
   const [checked, setChecked] = useState<Set<ExportFormat>>(new Set());
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -32,6 +34,12 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     (e) => e.status === "starting" || e.status === "processing"
   );
   const isActive = activeExports.length > 0;
+  const hasManualSelection = selectedIds.length > 0;
+
+  // Snapshot the selection at click time. The user's checkbox set must drive
+  // the export even if they keep clicking rows while the export is in
+  // flight, and even if Word + Screenshots run as two sequential jobs.
+  const selectionSnapshotRef = useRef<string[] | null>(null);
 
   const startExport = useCallback(async (format: ExportFormat) => {
     runningRef.current = true;
@@ -43,10 +51,23 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     ]);
 
     try {
+      const snapshot = selectionSnapshotRef.current;
+      const payload: Record<string, unknown> = {
+        format,
+        filters,
+        includeScreenshots: false,
+      };
+      // Sending an explicit invoiceIds list switches the server to
+      // selection-mode: it bypasses supplier-exclusion and the INCLUDED
+      // default so the Word file contains EXACTLY the checked rows.
+      if (snapshot && snapshot.length > 0) {
+        payload.invoiceIds = snapshot;
+      }
+
       const res = await fetch("/api/exports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ format, filters, includeScreenshots: false }),
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -165,17 +186,26 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
           if (!stillDone) return current;
           // Safe to navigate — all exports are still finished
           setChecked(new Set());
+          selectionSnapshotRef.current = null;
+          clearSelection();
           router.push("/exports");
           return [];
         });
       }, delay);
       return () => clearTimeout(timer);
     }
-  }, [activeExports, router, startExport]);
+  }, [activeExports, router, startExport, clearSelection]);
+
+  const snapshotSelection = () => {
+    // De-duplicate via Set so a stale toggle never sends the same ID twice.
+    selectionSnapshotRef.current =
+      selectedIds.length > 0 ? Array.from(new Set(selectedIds)) : null;
+  };
 
   const handleSingleExport = (format: ExportFormat) => {
     queueRef.current = [];
     setActiveExports([]);
+    snapshotSelection();
     startExport(format);
   };
 
@@ -188,6 +218,7 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     // Start the first, queue the rest
     queueRef.current = ordered.slice(1);
     setActiveExports([]);
+    snapshotSelection();
     startExport(ordered[0]);
   };
 
@@ -247,6 +278,14 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     );
   }
 
+  // When the user has manually checked rows, surface that in the buttons and
+  // ignore the upstream `disabled` flag (which is gated on includedCount —
+  // not meaningful when the export targets explicit IDs that may include
+  // EXCLUDED rows). When nothing is selected we fall back to the previous
+  // filter-based behaviour.
+  const buttonsDisabled = hasManualSelection ? false : disabled;
+  const selectedLabel = hasManualSelection ? ` (${selectedIds.length})` : "";
+
   return (
     <div className="flex items-center gap-2">
       {/* Individual buttons */}
@@ -254,20 +293,22 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
         variant="outline"
         size="sm"
         onClick={() => handleSingleExport("WORD")}
-        disabled={disabled}
+        disabled={buttonsDisabled}
+        title={hasManualSelection ? `Export ${selectedIds.length} selected invoice(s) to Word` : undefined}
       >
         <FileText className="h-3.5 w-3.5" />
-        Export Word
+        Export Word{selectedLabel}
       </Button>
       <Button
         variant="outline"
         size="sm"
         onClick={() => handleSingleExport("ZIP_SCREENSHOTS")}
-        disabled={disabled}
+        disabled={buttonsDisabled}
+        title={hasManualSelection ? `Export screenshots ZIP of ${selectedIds.length} selected invoice(s)` : undefined}
         className="border-emerald-500/30 text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 dark:text-emerald-400 dark:hover:bg-emerald-950"
       >
         <Images className="h-3.5 w-3.5" />
-        Screenshots ZIP
+        Screenshots ZIP{selectedLabel}
       </Button>
 
       {/* Separator */}
@@ -279,7 +320,7 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
           type="checkbox"
           checked={checked.has("WORD")}
           onChange={() => toggleCheck("WORD")}
-          disabled={disabled}
+          disabled={buttonsDisabled}
           className="rounded border-muted-foreground/30 h-3.5 w-3.5 accent-blue-600"
         />
         Word
@@ -289,7 +330,7 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
           type="checkbox"
           checked={checked.has("ZIP_SCREENSHOTS")}
           onChange={() => toggleCheck("ZIP_SCREENSHOTS")}
-          disabled={disabled}
+          disabled={buttonsDisabled}
           className="rounded border-muted-foreground/30 h-3.5 w-3.5 accent-emerald-600"
         />
         ZIP
@@ -298,11 +339,12 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
         variant="default"
         size="sm"
         onClick={handleExportSelected}
-        disabled={disabled || checked.size === 0}
+        disabled={buttonsDisabled || checked.size === 0}
+        title={hasManualSelection ? `Export ${selectedIds.length} selected invoice(s) in the chosen formats` : undefined}
         className="text-xs"
       >
         <Play className="h-3 w-3" />
-        Export Selected
+        Export Selected{selectedLabel}
       </Button>
     </div>
   );

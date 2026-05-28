@@ -11,6 +11,7 @@ import { InvoiceFilters } from "./filters";
 import { SupplierPanel } from "./supplier-panel";
 import { InvoiceList } from "./invoice-list";
 import { ExportWordButton } from "./export-word-button";
+import { InvoiceSelectionProvider } from "./selection-context";
 
 export default async function InvoicesPage({
   searchParams,
@@ -132,58 +133,60 @@ export default async function InvoicesPage({
   ).length;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Invoices"
-        description={`${visibleInvoices.length} results \u00b7 ${includedCount} included${reviewCount > 0 ? ` \u00b7 ${reviewCount} for review` : ""}`}
-      >
-        <div className="flex gap-2">
-          {includedCount > 0 ? (
-            <Button variant="outline" size="sm" asChild>
-              <a href={exportUrl}>
+    <InvoiceSelectionProvider>
+      <div className="space-y-6">
+        <PageHeader
+          title="Invoices"
+          description={`${visibleInvoices.length} results \u00b7 ${includedCount} included${reviewCount > 0 ? ` \u00b7 ${reviewCount} for review` : ""}`}
+        >
+          <div className="flex gap-2">
+            {includedCount > 0 ? (
+              <Button variant="outline" size="sm" asChild>
+                <a href={exportUrl}>
+                  <Download className="h-3.5 w-3.5" />
+                  Export CSV
+                </a>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" disabled>
                 <Download className="h-3.5 w-3.5" />
                 Export CSV
-              </a>
-            </Button>
-          ) : (
-            <Button variant="outline" size="sm" disabled>
-              <Download className="h-3.5 w-3.5" />
-              Export CSV
-            </Button>
-          )}
-          <ExportWordButton
-            filters={{
-              search: params.search,
-              tier: params.tier,
-              company: params.company,
-              scanId: params.scan,
-              reportStatus: "INCLUDED",
-            }}
-            disabled={includedCount === 0}
+              </Button>
+            )}
+            <ExportWordButton
+              filters={{
+                search: params.search,
+                tier: params.tier,
+                company: params.company,
+                scanId: params.scan,
+                reportStatus: "INCLUDED",
+              }}
+              disabled={includedCount === 0}
+            />
+          </div>
+        </PageHeader>
+
+        <Suspense>
+          <InvoiceFilters
+            companies={companies}
+            scans={scanList.map((s) => ({
+              ...s,
+              createdAt: s.createdAt.toISOString(),
+            }))}
           />
-        </div>
-      </PageHeader>
+          <SupplierPanel suppliers={allSuppliers} />
+        </Suspense>
 
-      <Suspense>
-        <InvoiceFilters
-          companies={companies}
-          scans={scanList.map((s) => ({
-            ...s,
-            createdAt: s.createdAt.toISOString(),
-          }))}
-        />
-        <SupplierPanel suppliers={allSuppliers} />
-      </Suspense>
-
-      {visibleInvoices.length > 0 ? (
-        <InvoiceList invoices={serialized} />
-      ) : (
-        <EmptyState
-          icon={FileText}
-          title="No invoices found"
-          description="Run a scan to detect invoices, or adjust your search filters."
-        />
-      )}
-    </div>
+        {visibleInvoices.length > 0 ? (
+          <InvoiceList invoices={serialized} />
+        ) : (
+          <EmptyState
+            icon={FileText}
+            title="No invoices found"
+            description="Run a scan to detect invoices, or adjust your search filters."
+          />
+        )}
+      </div>
+    </InvoiceSelectionProvider>
   );
 }

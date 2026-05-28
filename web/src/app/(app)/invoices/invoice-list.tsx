@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Check, Minus, FileCheck, FileX } from "lucide-react";
+import { Check, Minus, FileCheck, FileX } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatCurrency } from "@/lib/utils";
+import { useInvoiceSelection } from "./selection-context";
 
 const tierBadge: Record<
   string,
@@ -51,14 +52,23 @@ interface InvoiceListProps {
 export function InvoiceList({ invoices }: InvoiceListProps) {
   const router = useRouter();
   const [, startTransition] = useTransition();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const { selected, toggle, setAll, clear, isSelected, selectedIds } =
+    useInvoiceSelection();
   const [statuses, setStatuses] = useState<Record<string, string>>(() =>
     Object.fromEntries(invoices.map((inv) => [inv.id, inv.reportStatus]))
   );
 
+  // Reset transient state when the underlying list changes (filters/scan
+  // switch). Drop stale selected IDs that no longer exist in the new view
+  // so the export payload never contains ghosts from a previous filter.
   useEffect(() => {
     setStatuses(Object.fromEntries(invoices.map((inv) => [inv.id, inv.reportStatus])));
-    setSelected(new Set());
+    const visible = new Set(invoices.map((inv) => inv.id));
+    const pruned = selectedIds.filter((id) => visible.has(id));
+    if (pruned.length !== selectedIds.length) {
+      setAll(pruned);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoices]);
 
   const allIds = invoices.map((i) => i.id);
@@ -66,19 +76,14 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
   const someSelected = selected.size > 0 && !allSelected;
 
   const toggleOne = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    toggle(id);
   };
 
   const toggleAll = () => {
     if (allSelected) {
-      setSelected(new Set());
+      clear();
     } else {
-      setSelected(new Set(allIds));
+      setAll(allIds);
     }
   };
 
@@ -91,7 +96,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
       for (const id of ids) next[id] = status;
       return next;
     });
-    setSelected(new Set());
+    clear();
 
     await fetch("/api/invoices/report-status", {
       method: "PATCH",
@@ -106,8 +111,6 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
     const next = current === "INCLUDED" ? "EXCLUDED" : "INCLUDED";
     await setReportStatus([id], next as "INCLUDED" | "EXCLUDED");
   };
-
-  const selectedIds = Array.from(selected);
 
   return (
     <>
@@ -159,7 +162,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
             {invoices.map((inv) => {
               const badge =
                 tierBadge[inv.classificationTier] ?? tierBadge.not_invoice;
-              const isSelected = selected.has(inv.id);
+              const isRowSelected = isSelected(inv.id);
               const status = statuses[inv.id] ?? "INCLUDED";
               const isExcluded = status === "EXCLUDED";
 
@@ -170,18 +173,18 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
                     isExcluded
                       ? "bg-muted/20 opacity-50"
                       : "hover:bg-muted/30"
-                  } ${isSelected ? "bg-primary/5 hover:bg-primary/8" : ""}`}
+                  } ${isRowSelected ? "bg-primary/5 hover:bg-primary/8" : ""}`}
                 >
                   <td className="px-3 py-3">
                     <button
                       onClick={() => toggleOne(inv.id)}
                       className={`flex h-4.5 w-4.5 items-center justify-center rounded-md border transition-all duration-200 ${
-                        isSelected
+                        isRowSelected
                           ? "bg-primary border-primary shadow-sm shadow-primary/20"
                           : "border-border hover:border-primary/30"
                       }`}
                     >
-                      {isSelected && (
+                      {isRowSelected && (
                         <Check className="h-3 w-3 text-primary-foreground" />
                       )}
                     </button>
@@ -252,7 +255,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
         {invoices.map((inv) => {
           const badge =
             tierBadge[inv.classificationTier] ?? tierBadge.not_invoice;
-          const isSelected = selected.has(inv.id);
+          const isRowSelected = isSelected(inv.id);
           const status = statuses[inv.id] ?? "INCLUDED";
           const isExcluded = status === "EXCLUDED";
 
@@ -261,18 +264,18 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
               key={inv.id}
               className={`card-glow p-4 space-y-2 transition-all duration-200 ${
                 isExcluded ? "opacity-50" : ""
-              } ${isSelected ? "!border-primary/30 !shadow-md !shadow-primary/10" : ""}`}
+              } ${isRowSelected ? "!border-primary/30 !shadow-md !shadow-primary/10" : ""}`}
             >
               <div className="flex items-start gap-3">
                 <button
                   onClick={() => toggleOne(inv.id)}
                   className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all duration-200 ${
-                    isSelected
+                    isRowSelected
                       ? "bg-primary border-primary shadow-sm shadow-primary/20"
                       : "border-border"
                   }`}
                 >
-                  {isSelected && (
+                  {isRowSelected && (
                     <Check className="h-3 w-3 text-primary-foreground" />
                   )}
                 </button>
@@ -359,7 +362,7 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
             Exclude
           </Button>
           <button
-            onClick={() => setSelected(new Set())}
+            onClick={clear}
             className="text-xs text-muted-foreground hover:text-foreground ml-1 transition-colors"
           >
             Clear

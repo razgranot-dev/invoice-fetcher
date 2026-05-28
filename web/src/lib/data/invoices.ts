@@ -10,6 +10,7 @@ export async function getInvoices(
     scanId?: string;
     dateFrom?: Date;
     dateTo?: Date;
+    invoiceIds?: string[];
   },
   take = 500
 ) {
@@ -18,6 +19,11 @@ export async function getInvoices(
 
   const where: any = { organizationId };
 
+  // Explicit invoice ID list overrides broad filters — when the caller has
+  // manually picked rows, never widen the result set beyond that set.
+  if (filters?.invoiceIds && filters.invoiceIds.length > 0) {
+    where.id = { in: filters.invoiceIds };
+  }
   if (filters?.scanId) {
     where.scanId = filters.scanId;
   }

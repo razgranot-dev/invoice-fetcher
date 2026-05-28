@@ -6,6 +6,11 @@ import { createExport, getExports, updateExportStatus, updateExportProgress } fr
 import { dispatchWordExport, dispatchScreenshotZip } from "@/lib/worker";
 import { db } from "@/lib/db";
 import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
+import {
+  selectExportableInvoices,
+  validateInvoiceIds,
+  type ExportFormat,
+} from "@/lib/export-selection";
 
 export async function GET() {
   const session = await auth();
@@ -45,6 +50,7 @@ export async function POST(req: NextRequest) {
   const format = body.format as string;
   const rawFilters = (body.filters && typeof body.filters === "object" && !Array.isArray(body.filters)) ? body.filters : {};
   const includeScreenshots = body.includeScreenshots === true;
+  const rawInvoiceIds = body.invoiceIds;
 
   if (format !== "WORD" && format !== "ZIP_SCREENSHOTS") {
     return NextResponse.json(
@@ -52,6 +58,16 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+
+  // Validate explicit invoice ID selection. When the client passes a checked
+  // subset of rows, these IDs become the export's source of truth — broad
+  // filters and supplier-exclusion are bypassed below so the user's manual
+  // checkbox choice is never silently widened.
+  const idsValidation = validateInvoiceIds(rawInvoiceIds);
+  if (!idsValidation.valid) {
+    return NextResponse.json({ error: idsValidation.error }, { status: 400 });
+  }
+  const invoiceIds = idsValidation.invoiceIds;
 
   // Validate filter values — prevent injection via overly long or malformed strings
   const filters: Record<string, string | undefined> = {};
@@ -103,46 +119,59 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Query invoices matching filters — default to INCLUDED only for exports
-  if (!filters.reportStatus) filters.reportStatus = "INCLUDED";
-  const invoices = await getInvoices(orgId, {
-    search: filters.search,
-    tier: filters.tier,
-    company: filters.company,
-    scanId: filters.scanId,
-    reportStatus: filters.reportStatus,
-  }, 10000);
+  // When the client passes an explicit checkbox selection, that list IS the
+  // export. Skip every "smart" widening — supplier exclusion, the
+  // INCLUDED-by-default reportStatus filter, and the tier whitelist — so the
+  // Word file contains exactly what the user picked and nothing else. The
+  // org scope on getInvoices() still prevents cross-tenant leakage.
+  const useExplicitSelection = invoiceIds !== undefined;
 
-  // Enforce supplier relevance — the DB reportStatus cascade can miss invoices
-  // when company names don't exactly match the supplier brand name. Apply the
-  // same brand-based filter the page uses to guarantee consistency.
-  const excludedSuppliers = await db.supplier.findMany({
-    where: { organizationId: orgId, isRelevant: false },
-    select: { name: true },
-  });
+  let invoices: Awaited<ReturnType<typeof getInvoices>>;
+  if (useExplicitSelection) {
+    invoices = await getInvoices(orgId, { invoiceIds }, 10000);
+  } else {
+    // No selection → default broad export of the current filter view.
+    if (!filters.reportStatus) filters.reportStatus = "INCLUDED";
+    invoices = await getInvoices(orgId, {
+      search: filters.search,
+      tier: filters.tier,
+      company: filters.company,
+      scanId: filters.scanId,
+      reportStatus: filters.reportStatus,
+    }, 10000);
+  }
+
+  // Only the filter-mode branch needs the excluded supplier set — but loading
+  // it unconditionally keeps the path simple and the query is tiny (org-
+  // scoped, name-only). The helper short-circuits the brand check when an
+  // explicit selection is in play.
+  const excludedSuppliers = useExplicitSelection
+    ? []
+    : await db.supplier.findMany({
+        where: { organizationId: orgId, isRelevant: false },
+        select: { name: true },
+      });
   const excludedBrands = new Set(
     excludedSuppliers.map((s) => s.name.toLowerCase())
   );
-  const included = excludedBrands.size > 0
-    ? invoices.filter((inv) => {
-        const brand =
-          cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
-          (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
-        return !(brand && excludedBrands.has(brand));
-      })
-    : invoices;
 
-  // For Word exports: only confirmed + likely invoices.
-  // For screenshot ZIP: include all tiers so every invoice gets a screenshot.
-  const EXPORT_TIERS = new Set(["confirmed_invoice", "likely_invoice"]);
-  const exportable =
-    format === "ZIP_SCREENSHOTS"
-      ? included
-      : included.filter((inv) => EXPORT_TIERS.has(inv.classificationTier));
+  const exportable = selectExportableInvoices({
+    invoices,
+    format: format as ExportFormat,
+    invoiceIds,
+    excludedBrands,
+    brandResolver: (inv) =>
+      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
+      (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null),
+  });
 
   if (exportable.length === 0) {
     return NextResponse.json(
-      { error: "No invoices match the current filters" },
+      {
+        error: useExplicitSelection
+          ? "Selected invoices were not found"
+          : "No invoices match the current filters",
+      },
       { status: 400 }
     );
   }
