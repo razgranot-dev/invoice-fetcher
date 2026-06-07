@@ -338,6 +338,180 @@ async def debug_discovery(req: DiscoveryDebugRequest):
     })
 
 
+# ── Emergency PayPal direct import ───────────────────────────────────────────
+
+
+class PaypalImportRequest(BaseModel):
+    access_token: str = Field(..., max_length=4096)
+    refresh_token: str | None = Field(None, max_length=4096)
+    token_expiry: str | None = Field(None, max_length=64)
+    days_back: int = Field(730, ge=1, le=730)
+
+
+_PAYPAL_IMPORT_CAP = 1500  # safety cap on messages fetched in one emergency run
+
+
+@app.post("/debug/paypal-import")
+async def debug_paypal_import(req: PaypalImportRequest):
+    """Emergency PayPal-only import path: bypass the general scan query and run
+    `from:paypal OR paypal` directly, fetch → parse → classify → extract, and
+    return classified invoice dicts (PayPal senders only) + a full per-stage
+    funnel with skip reasons. The WEB side persists with the same idempotent
+    dedup the normal scan uses. Tokens are never echoed.
+    """
+    import json
+    from datetime import datetime as _dt, timedelta as _td
+    from core.invoice_classifier import classify_email as _classify_one
+
+    creds_dict: dict[str, Any] = {
+        "token": req.access_token,
+        "refresh_token": req.refresh_token,
+        "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    if req.token_expiry:
+        creds_dict["expiry"] = req.token_expiry.rstrip("Z").split(".")[0]
+
+    connector = GmailConnector()
+    ok, result = connector.build_service_from_json(json.dumps(creds_dict))
+    if not ok:
+        return JSONResponse(status_code=200, content={
+            "worker_version": WORKER_VERSION, "auth_ok": False,
+            "auth_error": result[:300],
+            "hint": "Reconnect Gmail and tick the Gmail box on the consent screen.",
+        })
+
+    since = (_dt.now() - _td(days=req.days_back)).strftime("%Y/%m/%d")
+
+    def _estimate(q: str) -> int | None:
+        try:
+            r = connector._exec(connector.service.users().messages().list(
+                userId="me", q=q, maxResults=1))
+            return r.get("resultSizeEstimate")
+        except Exception:
+            return None
+
+    raw_from_paypal = _estimate(f"after:{since} from:paypal")
+    raw_paypal_word = _estimate(f"after:{since} paypal")
+    raw_full_query = _estimate(connector.build_query([], req.days_back, False))
+
+    # Discovery: PayPal sender OR the word paypal anywhere. Paginate (cap).
+    import_query = f"after:{since} (from:paypal OR paypal)"
+    ids: list[str] = []
+    page_token = None
+    while True:
+        params: dict = {"userId": "me", "q": import_query, "maxResults": 500}
+        if page_token:
+            params["pageToken"] = page_token
+        resp = connector._exec(connector.service.users().messages().list(**params))
+        ids.extend(m["id"] for m in resp.get("messages", []))
+        if len(ids) >= _PAYPAL_IMPORT_CAP:
+            ids = ids[:_PAYPAL_IMPORT_CAP]
+            break
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    body_parser = BodyParser()
+    fetched = 0
+    paypal_invoices: list[dict] = []
+    skipped: list[dict] = []
+    candidates = parsed_ok = confirmed_likely = 0
+
+    for bstart in range(0, len(ids), 50):
+        raw_msgs = connector.get_messages_batch(ids[bstart:bstart + 50])
+        for msg in raw_msgs:
+            if msg is None:
+                continue
+            fetched += 1
+            try:
+                parsed = connector.parse_message(msg)
+            except Exception as e:
+                skipped.append({"reason": f"parse_failed: {type(e).__name__}"})
+                continue
+
+            # Emergency import is PayPal-only: ignore non-PayPal senders that
+            # merely mention "paypal" in the body.
+            if not paypal_provider.is_paypal_sender(parsed.get("sender")):
+                continue
+
+            cls = _classify_one(parsed)
+            parsed.update(cls)
+            tier = cls.get("classification_tier")
+            intent = paypal_provider.classify_intent(parsed)
+            if tier == "not_invoice" and not intent:
+                skipped.append({
+                    "sender": (parsed.get("sender") or "")[:100],
+                    "subject": (parsed.get("subject") or "")[:120],
+                    "reason": f"not a transaction (tier=not_invoice, score={cls.get('classification_score')})",
+                })
+                continue
+
+            candidates += 1
+            try:
+                pp = paypal_provider.extract_paypal(parsed)
+                parsed["paypal"] = pp
+                parsed["paypal_dedup_key"] = paypal_provider.dedup_key(pp)
+                if pp.get("merchant"):
+                    parsed["company"] = pp["merchant"]
+                # amount/currency from provider, else generic extractor below
+                if pp.get("amount") is not None:
+                    parsed["amount"] = pp["amount"]
+                    parsed["currency"] = pp.get("currency") or "USD"
+                note_bits = []
+                if pp.get("doc_type"):
+                    note_bits.append(f"PayPal {pp['doc_type'].replace('_', ' ')}")
+                if pp.get("merchant"):
+                    note_bits.append(f"to {pp['merchant']}")
+                if pp.get("transaction_id"):
+                    note_bits.append(f"txn {pp['transaction_id']}")
+                parsed["notes"] = " · ".join(note_bits) if note_bits else (parsed.get("notes") or "")
+                parsed_ok += 1
+            except Exception as e:
+                skipped.append({"reason": f"extract_failed: {type(e).__name__}"})
+
+            if tier in ("confirmed_invoice", "likely_invoice"):
+                confirmed_likely += 1
+
+            # Generic amount fallback when provider found none
+            if parsed.get("amount") is None:
+                try:
+                    enriched_one = enrich_results([parsed])[0]
+                    parsed["amount"] = enriched_one.get("amount")
+                    parsed["currency"] = enriched_one.get("currency") or parsed.get("currency") or "USD"
+                except Exception:
+                    pass
+
+            parsed.pop("body_text", None)
+            for att in parsed.get("attachments", []):
+                att.pop("data", None)
+            paypal_invoices.append(parsed)
+
+    funnel = {
+        "raw_from_paypal": raw_from_paypal,
+        "raw_paypal_word": raw_paypal_word,
+        "raw_full_scan_query": raw_full_query,
+        "discovery_ids": len(ids),
+        "fetched": fetched,
+        "paypal_candidates": candidates,
+        "parsed": parsed_ok,
+        "confirmed_or_likely": confirmed_likely,
+        "skipped": len(skipped),
+    }
+    logger.info("[PayPal IMPORT] funnel=%s", funnel)
+
+    return JSONResponse(status_code=200, content={
+        "worker_version": WORKER_VERSION,
+        "auth_ok": True,
+        "days_back": req.days_back,
+        "import_query": import_query,
+        "funnel": funnel,
+        "skip_reasons": skipped[:50],
+        "invoices": paypal_invoices,
+    })
+
+
 # ── Scan ─────────────────────────────────────────────────────────────────
 
 

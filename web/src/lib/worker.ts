@@ -74,6 +74,37 @@ export async function checkWorkerHealth(): Promise<{
   }
 }
 
+/** Call the worker's emergency PayPal-only import. Returns funnel + invoices. */
+export async function dispatchPaypalImport(
+  connection: { accessToken: string; refreshToken: string | null; tokenExpiry: Date | null },
+  daysBack: number,
+): Promise<{
+  auth_ok?: boolean;
+  auth_error?: string;
+  funnel?: Record<string, number | null>;
+  skip_reasons?: Array<{ sender?: string; subject?: string; reason?: string }>;
+  invoices?: Array<Record<string, unknown>>;
+  import_query?: string;
+  worker_version?: string;
+}> {
+  const res = await fetch(`${WORKER_URL}/debug/paypal-import`, {
+    method: "POST",
+    headers: workerHeaders(),
+    body: JSON.stringify({
+      access_token: connection.accessToken,
+      refresh_token: connection.refreshToken,
+      token_expiry: connection.tokenExpiry?.toISOString() ?? null,
+      days_back: daysBack,
+    }),
+    signal: AbortSignal.timeout(280_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Worker paypal-import error ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
 /** Call the worker's real-Gmail PayPal discovery probe. Returns raw JSON. */
 export async function dispatchDiscoveryDebug(
   connection: { accessToken: string; refreshToken: string | null; tokenExpiry: Date | null },

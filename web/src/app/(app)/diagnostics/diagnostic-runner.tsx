@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Loader2, Play, RefreshCw, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
+import { Loader2, Play, RefreshCw, CheckCircle2, XCircle, AlertTriangle, DownloadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface ProbeResult {
@@ -47,6 +47,10 @@ export function DiagnosticRunner() {
   const [data, setData] = useState<DiagnosticResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  const [importing, setImporting] = useState(false);
+  const [importData, setImportData] = useState<any>(null);
+  const [importErr, setImportErr] = useState<string | null>(null);
+
   async function run() {
     setLoading(true);
     setErr(null);
@@ -64,6 +68,26 @@ export function DiagnosticRunner() {
       setErr(e instanceof Error ? e.message : "Request failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runImport() {
+    setImporting(true);
+    setImportErr(null);
+    setImportData(null);
+    try {
+      const res = await fetch(`/api/debug/paypal-import?days=${days}`, { method: "POST", cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) {
+        setImportErr(json.error || `HTTP ${res.status}`);
+        setImportData(json);
+      } else {
+        setImportData(json);
+      }
+    } catch (e) {
+      setImportErr(e instanceof Error ? e.message : "Import failed");
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -108,11 +132,63 @@ export function DiagnosticRunner() {
           <option value={540}>540</option>
           <option value={730}>730</option>
         </select>
-        <Button onClick={run} disabled={loading} variant="glow" size="sm">
+        <Button onClick={run} disabled={loading || importing} variant="glow" size="sm">
           {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
           {loading ? "Running probe…" : "Run PayPal Diagnostic"}
         </Button>
+        <Button onClick={runImport} disabled={importing || loading} variant="outline" size="sm"
+          className="border-emerald-500/40 text-emerald-700">
+          {importing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <DownloadCloud className="h-3.5 w-3.5" />}
+          {importing ? "Importing…" : "Emergency PayPal Import"}
+        </Button>
       </div>
+
+      {importErr && (
+        <div className="rounded-xl border border-red-300 bg-red-50 text-red-700 px-4 py-3 text-sm">
+          <strong>Import error:</strong> {importErr}
+        </div>
+      )}
+
+      {importData && (
+        <section className="rounded-xl border border-emerald-300 bg-emerald-50/40 p-4">
+          <h2 className="font-bold mb-2 text-emerald-800">Emergency PayPal Import — result</h2>
+          {importData.authError ? (
+            <div className="text-sm text-amber-800">
+              Gmail auth problem: {importData.authError}.{" "}
+              <a href="/login" className="underline font-semibold">Reconnect Gmail</a>
+              {importData.gmailConnection?.email ? ` (connected: ${importData.gmailConnection.email})` : ""}
+            </div>
+          ) : (
+            <>
+              <Row label="Connected Gmail" value={importData.gmailConnection?.email ?? "—"} good={!!importData.gmailConnection?.email} />
+              <Row label="Worker version" value={importData.workerVersion ?? "—"} />
+              <div className="mt-3 mb-1 text-xs font-bold uppercase tracking-wider text-muted-foreground">Where did it become zero?</div>
+              {importData.funnel && Object.entries(importData.funnel).map(([k, v]) => (
+                <Row key={k} label={k} value={String(v)} good={
+                  ["newlyCreated", "dashboardVisibleForScan", "orgPaypalSenderRows", "raw_from_paypal", "fetched", "paypal_candidates", "persistable"].includes(k)
+                    ? (Number(v) > 0 ? true : Number(v) === 0 ? false : undefined)
+                    : undefined
+                } />
+              ))}
+              {importData.scanId && (
+                <a href={importData.invoicesUrl} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-white">
+                  View imported PayPal invoices →
+                </a>
+              )}
+              {Array.isArray(importData.skipReasons) && importData.skipReasons.length > 0 && (
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-xs font-semibold">Skip reasons ({importData.skipReasons.length})</summary>
+                  <div className="mt-2 text-xs space-y-1">
+                    {importData.skipReasons.map((s: any, i: number) => (
+                      <div key={i} className="truncate text-muted-foreground">• {s.subject || s.sender || ""} — {s.reason}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </>
+          )}
+        </section>
+      )}
 
       {err && (
         <div className="rounded-xl border border-red-300 bg-red-50 text-red-700 px-4 py-3 text-sm">
