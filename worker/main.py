@@ -54,6 +54,37 @@ from utils.logger import get_logger
 logger = get_logger("worker.main")
 logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
 
+
+def _worker_version() -> str:
+    """Best-effort running-commit identifier so /health proves WHICH code is
+    live (deploy-cache / wrong-service bugs are otherwise invisible). Render
+    injects RENDER_GIT_COMMIT automatically; other platforms use the fallbacks.
+    """
+    for k in (
+        "RENDER_GIT_COMMIT", "WORKER_GIT_SHA", "SOURCE_VERSION",
+        "GIT_COMMIT", "VERCEL_GIT_COMMIT_SHA", "RAILWAY_GIT_COMMIT_SHA",
+    ):
+        v = os.getenv(k)
+        if v:
+            return v[:12]
+    return "unknown"
+
+
+WORKER_VERSION = _worker_version()
+
+# Behavioural proof that the PayPal discovery fix is actually in THIS build —
+# more reliable than a commit hash (which can be stale via build cache). We
+# build a probe query at startup and check for the `from:paypal` anchor.
+try:
+    _PAYPAL_DISCOVERY_ANCHOR = "from:paypal" in GmailConnector().build_query([], 30, False)
+except Exception:  # never let a probe crash worker startup
+    _PAYPAL_DISCOVERY_ANCHOR = False
+
+logger.info(
+    "WORKER STARTUP — version=%s paypal_discovery_anchor=%s log_level=%s",
+    WORKER_VERSION, _PAYPAL_DISCOVERY_ANCHOR, logger.level,
+)
+
 app = FastAPI(title="Invoice Fetcher Worker", version="0.1.0")
 
 # ── Bearer token auth middleware ─────────────────────────────────────────
@@ -173,7 +204,138 @@ class ExportRequest(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "invoice-fetcher-worker"}
+    # version + paypal_discovery_anchor make it possible to PROVE, with a single
+    # unauthenticated curl, that this process is running the new PayPal code and
+    # not a stale build. (/health was previously version-less — the exact gap
+    # that made "is the worker actually redeployed?" unanswerable.)
+    return {
+        "status": "ok",
+        "service": "invoice-fetcher-worker",
+        "version": WORKER_VERSION,
+        "paypal_discovery_anchor": _PAYPAL_DISCOVERY_ANCHOR,
+    }
+
+
+# ── PayPal discovery debug (real Gmail, no fixtures) ─────────────────────────
+
+
+class DiscoveryDebugRequest(BaseModel):
+    access_token: str = Field(..., max_length=4096)
+    refresh_token: str | None = Field(None, max_length=4096)
+    token_expiry: str | None = Field(None, max_length=64)
+    days_back: int = Field(365, ge=1, le=730)
+
+
+@app.post("/debug/discovery")
+async def debug_discovery(req: DiscoveryDebugRequest):
+    """Run REAL Gmail discovery probes for PayPal against the connected account.
+
+    Returns counts + redacted samples + a classification sample so we can prove
+    end-to-end exactly where PayPal becomes zero (mailbox / scope / query /
+    fetch / classify). Tokens are NEVER echoed back.
+    """
+    import json
+    from datetime import datetime as _dt, timedelta as _td
+
+    creds_dict: dict[str, Any] = {
+        "token": req.access_token,
+        "refresh_token": req.refresh_token,
+        "client_id": os.getenv("GOOGLE_CLIENT_ID", ""),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET", ""),
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }
+    if req.token_expiry:
+        creds_dict["expiry"] = req.token_expiry.rstrip("Z").split(".")[0]
+
+    connector = GmailConnector()
+    ok, result = connector.build_service_from_json(json.dumps(creds_dict))
+    if not ok:
+        # result carries AUTH_ERROR: prefix when the grant lacks gmail.readonly
+        return JSONResponse(status_code=200, content={
+            "worker_version": WORKER_VERSION,
+            "auth_ok": False,
+            "auth_error": result[:300],
+            "hint": "Reconnect Gmail and tick the Gmail box on Google's consent screen.",
+        })
+
+    since = (_dt.now() - _td(days=req.days_back)).strftime("%Y/%m/%d")
+    full_query = connector.build_query([], req.days_back, unread_only=False)
+
+    probes: dict[str, Any] = {}
+    probe_specs = [
+        ("from:paypal", f"after:{since} from:paypal"),
+        ("from:paypal.com", f"after:{since} from:paypal.com"),
+        ("word:paypal", f"after:{since} paypal"),
+        ("category:purchases", f"after:{since} category:purchases"),
+        ("full_scan_query", full_query),
+    ]
+    for label, q in probe_specs:
+        try:
+            resp = connector._exec(
+                connector.service.users().messages().list(userId="me", q=q, maxResults=5)
+            )
+            ids = [m["id"] for m in resp.get("messages", [])]
+            samples = []
+            for mid in ids[:5]:
+                try:
+                    raw = connector.get_message(mid)
+                    parsed = connector.parse_message(raw)
+                    samples.append({
+                        "sender": (parsed.get("sender") or "")[:120],
+                        "subject": (parsed.get("subject") or "")[:140],
+                        "date": (parsed.get("date") or "")[:40],
+                    })
+                except Exception as e:
+                    samples.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
+            probes[label] = {
+                "result_size_estimate": resp.get("resultSizeEstimate"),
+                "returned_ids": len(ids),
+                "samples": samples,
+            }
+        except Exception as e:
+            probes[label] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+
+    # Classification sample on the from:paypal hits — proves parse → classify.
+    from core.invoice_classifier import classify_email as _classify_one
+    pipeline_sample = []
+    try:
+        pp_resp = connector._exec(
+            connector.service.users().messages().list(
+                userId="me", q=f"after:{since} from:paypal", maxResults=10
+            )
+        )
+        for mid in [m["id"] for m in pp_resp.get("messages", [])][:10]:
+            try:
+                raw = connector.get_message(mid)
+                parsed = connector.parse_message(raw)
+                cls = _classify_one(parsed)
+                intent = paypal_provider.classify_intent(parsed)
+                ex = paypal_provider.extract_paypal(parsed) if intent else {}
+                pipeline_sample.append({
+                    "sender": (parsed.get("sender") or "")[:120],
+                    "subject": (parsed.get("subject") or "")[:140],
+                    "tier": cls.get("classification_tier"),
+                    "score": cls.get("classification_score"),
+                    "is_transaction": bool(intent),
+                    "merchant": ex.get("merchant"),
+                    "amount": ex.get("amount"),
+                    "currency": ex.get("currency"),
+                })
+            except Exception as e:
+                pipeline_sample.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
+    except Exception as e:
+        pipeline_sample.append({"error": f"{type(e).__name__}: {str(e)[:120]}"})
+
+    return JSONResponse(status_code=200, content={
+        "worker_version": WORKER_VERSION,
+        "paypal_discovery_anchor": _PAYPAL_DISCOVERY_ANCHOR,
+        "auth_ok": True,
+        "days_back": req.days_back,
+        "since": since,
+        "full_scan_query": full_query,
+        "probes": probes,
+        "paypal_classification_sample": pipeline_sample,
+    })
 
 
 # ── Scan ─────────────────────────────────────────────────────────────────
@@ -221,6 +383,40 @@ async def run_scan(req: ScanRequest):
     async def _generate():
         try:
             yield json.dumps({"progress": 1, "message": "Searching inbox...", "stage": "search"}) + "\n"
+
+            # Log the EXACT discovery query so production can be audited from
+            # logs — proves whether the PayPal anchor is present and whether an
+            # unexpected keyword/unread/date filter is narrowing the search.
+            _disco_query = connector.build_query(req.keywords, req.days_back, req.unread_only)
+            logger.info("[Scan %s] DISCOVERY QUERY = %s", req.scan_id, _disco_query)
+            logger.info(
+                "[Scan %s] DISCOVERY PARAMS — days_back=%s unread_only=%s keywords=%s paypal_anchor=%s worker_version=%s",
+                req.scan_id, req.days_back, req.unread_only, req.keywords,
+                "from:paypal" in _disco_query, WORKER_VERSION,
+            )
+
+            # Dedicated PayPal raw-discovery probe — isolates "is PayPal even in
+            # this mailbox / reachable by this token" from classification. Cheap
+            # (resultSizeEstimate, maxResults=1). If these are 0, the problem is
+            # discovery/account/scope, NOT parsing.
+            from datetime import datetime as _dt, timedelta as _td
+            _since = (_dt.now() - _td(days=req.days_back)).strftime("%Y/%m/%d")
+            for _label, _q in (
+                ("from:paypal", f"after:{_since} from:paypal"),
+                ("from:paypal.com", f"after:{_since} from:paypal.com"),
+                ("word:paypal", f"after:{_since} paypal"),
+            ):
+                try:
+                    _r = connector._exec(
+                        connector.service.users().messages().list(userId="me", q=_q, maxResults=1)
+                    )
+                    logger.info(
+                        "[Scan %s] PAYPAL PROBE [%s] -> resultSizeEstimate=%s",
+                        req.scan_id, _label, _r.get("resultSizeEstimate"),
+                    )
+                except Exception as _pe:
+                    logger.warning("[Scan %s] PAYPAL PROBE [%s] failed: %s",
+                                   req.scan_id, _label, f"{type(_pe).__name__}: {str(_pe)[:120]}")
 
             msg_ids = connector.list_message_ids(
                 req.keywords, req.days_back, req.unread_only

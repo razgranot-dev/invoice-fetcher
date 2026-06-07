@@ -53,6 +53,8 @@ interface WorkerScanResult {
 export async function checkWorkerHealth(): Promise<{
   ok: boolean;
   error?: string;
+  version?: string;
+  paypalDiscoveryAnchor?: boolean;
 }> {
   try {
     const res = await fetch(`${WORKER_URL}/health`, {
@@ -60,11 +62,39 @@ export async function checkWorkerHealth(): Promise<{
       signal: AbortSignal.timeout(3000),
     });
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-    return { ok: true };
+    const data = await res.json().catch(() => ({}));
+    return {
+      ok: true,
+      version: data.version,
+      paypalDiscoveryAnchor: data.paypal_discovery_anchor,
+    };
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
     return { ok: false, error: msg };
   }
+}
+
+/** Call the worker's real-Gmail PayPal discovery probe. Returns raw JSON. */
+export async function dispatchDiscoveryDebug(
+  connection: { accessToken: string; refreshToken: string | null; tokenExpiry: Date | null },
+  daysBack: number,
+): Promise<unknown> {
+  const res = await fetch(`${WORKER_URL}/debug/discovery`, {
+    method: "POST",
+    headers: workerHeaders(),
+    body: JSON.stringify({
+      access_token: connection.accessToken,
+      refresh_token: connection.refreshToken,
+      token_expiry: connection.tokenExpiry?.toISOString() ?? null,
+      days_back: daysBack,
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Worker discovery-debug error ${res.status}: ${text.slice(0, 300)}`);
+  }
+  return res.json();
 }
 
 export async function dispatchScan(
