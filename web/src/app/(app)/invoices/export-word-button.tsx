@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FileText, Loader2, CheckCircle2, Images, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useInvoiceSelection } from "./selection-context";
+import { buildExportPayload } from "@/lib/export-payload";
 
 interface ExportWordButtonProps {
   filters: { search?: string; tier?: string; company?: string; scanId?: string; reportStatus?: string };
@@ -51,18 +52,15 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     ]);
 
     try {
-      const snapshot = selectionSnapshotRef.current;
-      const payload: Record<string, unknown> = {
+      // Single source of truth for the selection→payload contract (tested in
+      // export-payload.test.ts). A non-empty snapshot ⇒ invoiceIds is sent and
+      // the server exports EXACTLY the checked rows; empty ⇒ filter-mode.
+      const payload = buildExportPayload({
         format,
         filters,
+        selectedIds: selectionSnapshotRef.current,
         includeScreenshots: false,
-      };
-      // Sending an explicit invoiceIds list switches the server to
-      // selection-mode: it bypasses supplier-exclusion and the INCLUDED
-      // default so the Word file contains EXACTLY the checked rows.
-      if (snapshot && snapshot.length > 0) {
-        payload.invoiceIds = snapshot;
-      }
+      });
 
       const res = await fetch("/api/exports", {
         method: "POST",

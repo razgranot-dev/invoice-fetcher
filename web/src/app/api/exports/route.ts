@@ -165,6 +165,31 @@ export async function POST(req: NextRequest) {
       (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null),
   });
 
+  // ── Selection-contract observability + invariant guard ──────────────────
+  // Make the selection vs filter decision auditable from logs, and treat a
+  // selection-mode export that contains MORE than the user picked as a hard
+  // error (it would mean the "selected IDs are source of truth" contract
+  // broke). selectExportableInvoices already intersects against invoiceIds,
+  // so this should be impossible — the assert is defense-in-depth.
+  const exportMode = useExplicitSelection ? "selected" : "filtered";
+  const selectedIdsCount = invoiceIds?.length ?? 0;
+  const exportedInvoicesCount = exportable.length;
+  console.log(
+    `[Export] mode=${exportMode} format=${format} selectedIdsCount=${selectedIdsCount} ` +
+    `exportedInvoicesCount=${exportedInvoicesCount} ` +
+    `appliedFilters=${JSON.stringify(useExplicitSelection ? {} : filters)}`
+  );
+  if (useExplicitSelection && exportedInvoicesCount > selectedIdsCount) {
+    console.error(
+      `[Export] SELECTION INVARIANT VIOLATION — exported ${exportedInvoicesCount} > selected ${selectedIdsCount}. ` +
+      `Refusing to widen the user's selection.`
+    );
+    return NextResponse.json(
+      { error: "Export selection integrity check failed. Please retry." },
+      { status: 500 }
+    );
+  }
+
   if (exportable.length === 0) {
     return NextResponse.json(
       {

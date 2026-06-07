@@ -88,11 +88,13 @@ export interface SelectInvoicesOpts<I extends InvoiceForExport> {
 /**
  * Decide which invoices end up in the generated export.
  *
- * Selection-mode (`invoiceIds` defined): return the invoices verbatim. The
- * caller is responsible for having fetched them already constrained by the
- * ID set, but we deliberately do NOT re-apply supplier-exclusion or the
- * WORD tier whitelist here — those would silently drop rows the user
- * explicitly checked.
+ * Selection-mode (`invoiceIds` defined): return EXACTLY the rows whose id is in
+ * the requested set — and nothing else. We intersect against `invoiceIds` here
+ * (rather than trusting the caller to have constrained the query) so that even
+ * if an upstream query regresses and over-fetches, the export can never widen
+ * beyond the user's explicit checkbox choice. We deliberately do NOT re-apply
+ * supplier-exclusion or the WORD tier whitelist — those would silently DROP
+ * rows the user explicitly checked.
  *
  * Filter-mode (`invoiceIds` undefined): mirror the page's INCLUDED view by
  * dropping invoices whose canonical brand is in the excluded supplier set,
@@ -104,7 +106,10 @@ export function selectExportableInvoices<I extends InvoiceForExport>(
   const { invoices, format, invoiceIds, excludedBrands, brandResolver } = opts;
 
   if (invoiceIds !== undefined) {
-    return invoices;
+    // Bulletproof: selection is the source of truth. Intersect so a widened
+    // upstream result set can never leak unselected rows into the export.
+    const requested = new Set(invoiceIds);
+    return invoices.filter((inv) => requested.has(inv.id));
   }
 
   const included =

@@ -134,6 +134,23 @@ describe("selectExportableInvoices — selection-mode", () => {
     expect(result.find((i) => i.id === "c_c")).toBeUndefined();
   });
 
+  test("bulletproof: selection-mode drops any row NOT in invoiceIds even if upstream over-fetched", () => {
+    // Simulate an upstream regression where getInvoices() returned extra rows.
+    // selectExportableInvoices must still ship ONLY the user's picks.
+    const a = inv({ id: "c_a", company: "Anthropic" });
+    const b = inv({ id: "c_b", company: "Apple" });
+    const stray = inv({ id: "c_stray", company: "ShouldNeverShip" });
+    const result = selectExportableInvoices({
+      invoices: [a, b, stray], // <- widened result set
+      format: "WORD",
+      invoiceIds: ["c_a", "c_b"],
+      excludedBrands: new Set(),
+      brandResolver,
+    });
+    expect(result.map((i) => i.id).sort()).toEqual(["c_a", "c_b"]);
+    expect(result.find((i) => i.id === "c_stray")).toBeUndefined();
+  });
+
   test("supplier exclusion does NOT override explicit selection (regression for the original bug)", () => {
     const picked = inv({ id: "c_picked", company: "ExcludedBrand" });
     const result = selectExportableInvoices({
