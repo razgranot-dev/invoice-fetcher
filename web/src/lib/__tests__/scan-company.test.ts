@@ -93,6 +93,34 @@ describe("extractVendorFromSubject — PayPal vendor extraction", () => {
       extractVendorFromSubject("You sent a payment of $29.00 USD to Shopify", "service@paypal.com")
     ).toBe("Shopify");
   });
+  it("extracts the merchant from a Hebrew PayPal subject", () => {
+    expect(
+      extractVendorFromSubject("קבלה עבור התשלום שלך ל-Higgsfield", "service@paypal.com")
+    ).toBe("Higgsfield");
+  });
+  it("extracts the merchant from a STRIPE 'receipt from X' subject (not just PayPal)", () => {
+    expect(
+      extractVendorFromSubject("Your receipt from Vercel", "receipts@stripe.com")
+    ).toBe("Vercel");
+    expect(
+      extractVendorFromSubject("Receipt from Higgsfield", "invoice+statements@stripe.com")
+    ).toBe("Higgsfield");
+  });
+  it("returns undefined for non-processor senders (their domain brand is correct)", () => {
+    expect(extractVendorFromSubject("Your invoice", "billing@vercel.com")).toBeUndefined();
+  });
+});
+
+describe("extractCompany — noise display names fall through to the domain brand", () => {
+  it("'Billing' display name does not shadow the real domain", () => {
+    expect(extractCompany('"Billing" <noreply@acmecorp.com>')).toBe("Acmecorp");
+  });
+  it("'Receipts' display name resolves to the real brand, not a phantom 'Receipts' supplier", () => {
+    expect(extractCompany('"Receipts" <receipts@higgsfield.ai>')).toBe("Higgsfield");
+  });
+  it("a real display name is still used", () => {
+    expect(extractCompany('"Higgsfield AI" <team@higgsfield.ai>')).toContain("Higgsfield");
+  });
 });
 
 describe("normalizeCompanyName — brand variants", () => {

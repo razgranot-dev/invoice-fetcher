@@ -102,6 +102,21 @@ class TestBuildQueryAnchors:
         for kw in ("from:invoice", "from:billing", "from:receipt", "from:payments"):
             assert kw in q, f"Missing from-local-part anchor: {kw}"
 
+    def test_query_has_known_vendor_brand_anchors(self, connector):
+        """Per-vendor from: brand anchors restore coverage for vendors whose
+        receipts have localized/opaque subjects + non-keyword senders that
+        category:purchases doesn't reliably catch (the 2026-05-22 regression).
+        These match the vendor domain, subdomains, AND display name."""
+        q = connector.build_query([], days_back=90, unread_only=False)
+        for kw in (
+            "from:stripe", "from:apple", "from:openai", "from:anthropic",
+            "from:vercel", "from:render", "from:hostinger", "from:shopify",
+            "from:canva", "from:higgsfield", "from:wix", "from:linkedin",
+            "from:uber", "from:gett", "from:amazon", "from:google",
+            "from:cellcom", "from:bezeq",
+        ):
+            assert kw in q, f"Missing vendor brand anchor: {kw}"
+
     def test_query_has_paypal_processor_anchor(self, connector):
         """from:paypal matches the 'PayPal' display name AND every paypal.*
         domain regardless of subject/locale. Root-cause fix for PayPal
@@ -180,16 +195,26 @@ class TestQueryLengthBound:
     """Pin the practical Gmail query-length ceiling. The old build_query
     produced ~2.5-3 KB queries; longer queries silently return empty results."""
 
-    def test_empty_keywords_well_under_limit(self, connector):
+    def test_empty_keywords_under_hard_cap(self, connector):
+        # The query intentionally includes per-vendor brand `from:` anchors
+        # (restored 2026-06-07 after the slim-query regression). It must stay
+        # under the hard cap so it never approaches Gmail's ~2KB q-param limit.
         q = connector.build_query([], days_back=30, unread_only=False)
-        assert len(q) < 1000, (
-            f"Empty-keyword query is {len(q)} chars; should be ~600. "
-            "If this fails, build_query has regrown the vendor list."
+        assert len(q) <= connector._QUERY_HARD_CAP, (
+            f"Empty-keyword query is {len(q)} chars; exceeds hard cap "
+            f"{connector._QUERY_HARD_CAP}."
         )
 
-    def test_max_user_keywords_under_limit(self, connector):
+    def test_max_user_keywords_under_hard_cap(self, connector):
+        # With the max 20 user keywords, brand anchors auto-trim so the total
+        # never exceeds the hard cap — core + keyword coverage always survive.
         q = connector.build_query([f"kw{i}" for i in range(20)], days_back=30, unread_only=True)
-        assert len(q) < 2000, (
-            f"20-keyword query is {len(q)} chars — too close to Gmail's "
-            "~2KB q-parameter limit. Keep user keyword splitting bounded."
+        assert len(q) <= connector._QUERY_HARD_CAP, (
+            f"20-keyword query is {len(q)} chars — must stay under the hard cap "
+            f"{connector._QUERY_HARD_CAP} (Gmail ~2KB limit). Brand-anchor "
+            "budget trimming failed."
         )
+        # Core anchors must NEVER be trimmed, even under keyword pressure.
+        assert "category:purchases" in q
+        assert "subject:invoice" in q and "subject:תשלום" in q
+        assert "from:paypal" in q

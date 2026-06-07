@@ -477,10 +477,48 @@ class GmailConnector:
         *paypal_provider.discovery_query_tokens(),
     ]
 
+    # Brand `from:` anchors for KNOWN vendors. Restores the per-vendor coverage
+    # that the 2026-05-22 slim-query rewrite dropped: vendors whose receipts
+    # have localized/opaque subjects and non-keyword senders (service@, team@,
+    # premium@, orders@) were reachable ONLY via Gmail's category:purchases,
+    # which Google does not reliably assign — so their receipts were silently
+    # never fetched (the broad "too few receipts / missing suppliers"
+    # regression, confirmed across PayPal, Stripe, Wix, Gett, Higgsfield,
+    # Shopify, Hebrew vendors, etc.).
+    #
+    # Brand TOKENS (not full domains): Gmail tokenizes the From header, so
+    # `from:hostinger` matches hostinger.com, mailer.hostinger.com, AND the
+    # "Hostinger" display name — broader and more robust than `from:domain`.
+    # Discovery over-fetch is safe: the classifier still decides per email.
+    # Short/ambiguous tokens (e.g. "hot") use the full domain to avoid
+    # accidental matches. MUST stay roughly in sync with _INVOICE_SENDER_DOMAINS
+    # in invoice_classifier.py (the scoring list). PayPal is added via
+    # _QUERY_PROCESSOR_FROM_TOKENS above.
+    _QUERY_BRAND_FROM_TOKENS: list[str] = [
+        # Payment processors / SaaS
+        "stripe", "apple", "openai", "anthropic", "vercel", "render",
+        "hostinger", "shopify", "canva", "higgsfield", "wix", "squarespace",
+        "notion", "linkedin", "microsoft", "adobe", "spotify", "netflix",
+        "zoom", "namecheap", "godaddy", "digitalocean", "heroku", "dropbox",
+        "google", "amazon", "facebookmail",
+        # Ride / delivery / travel
+        "uber", "lyft", "gett", "bolt", "wolt", "doordash", "booking",
+        "airbnb", "expedia", "agoda",
+        # E-commerce
+        "aliexpress", "ebay", "etsy", "temu",
+        # Israeli vendors / invoicing SaaS
+        "cibus", "tenbis", "cellcom", "bezeq", "partner", "pelephone",
+        "hot.net.il", "greeninvoice", "icount",
+    ]
+
     # Hard cap on query length. Gmail's q parameter has a practical upper
     # bound around 2KB; longer queries can silently return empty results
     # or 400 errors. We log a warning if we approach this.
     _QUERY_LENGTH_WARN = 1800
+    # Hard ceiling for the assembled query. Brand anchors are trimmed to stay
+    # under this so the query never approaches Gmail's ~2KB practical q-param
+    # limit (past which it silently returns empty results or 400s).
+    _QUERY_HARD_CAP = 1900
 
     def build_query(self, keywords: list[str], days_back: int, unread_only: bool) -> str:
         """Build a slim, high-recall Gmail search query.
@@ -542,13 +580,34 @@ class GmailConnector:
         for token in self._QUERY_PROCESSOR_FROM_TOKENS:
             clauses.append(f"from:{token}")
 
-        query = " ".join(parts) + " (" + " OR ".join(clauses) + ")"
+        # Assemble the CORE query (clauses 1-6). These are always included.
+        prefix = " ".join(parts) + " ("
+        suffix = ")"
+        query = prefix + " OR ".join(clauses)
 
-        if len(query) > self._QUERY_LENGTH_WARN:
+        # 7. Known-vendor brand anchors — restores per-vendor coverage dropped
+        #    by the 2026-05-22 slim-query rewrite (see _QUERY_BRAND_FROM_TOKENS).
+        #    Appended WITHIN a hard length budget: brand anchors are the
+        #    trimmable "nice to have", so a large user-keyword set can never
+        #    push the query past Gmail's ~2KB practical limit (beyond which it
+        #    silently returns empty/400). Core anchors above always survive.
+        omitted = 0
+        for token in self._QUERY_BRAND_FROM_TOKENS:
+            clause = f" OR from:{token}"
+            if len(query) + len(clause) + len(suffix) > self._QUERY_HARD_CAP:
+                omitted += 1
+                continue
+            query += clause
+        query += suffix
+
+        if omitted:
             _log.warning(
-                "Gmail query length %d exceeds soft cap %d — consider trimming keyword lists",
-                len(query), self._QUERY_LENGTH_WARN,
+                "Gmail query near hard cap (%d) — %d brand anchors omitted; "
+                "core + keyword coverage intact.",
+                self._QUERY_HARD_CAP, omitted,
             )
+        elif len(query) > self._QUERY_LENGTH_WARN:
+            _log.info("Gmail query length %d (soft cap %d).", len(query), self._QUERY_LENGTH_WARN)
 
         return query
 

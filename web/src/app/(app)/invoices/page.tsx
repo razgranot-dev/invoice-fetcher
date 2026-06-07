@@ -3,7 +3,7 @@ import { FileText } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import { requireOrganization } from "@/lib/session";
-import { getInvoices, getScanListForFilter } from "@/lib/data/invoices";
+import { getInvoices, getScanListForFilter, getSupplierBrandCounts } from "@/lib/data/invoices";
 import { getSuppliers } from "@/lib/data/suppliers";
 import { canonicalSupplierKey, canonicalDisplayName } from "@/lib/supplier-canonical";
 import { InvoiceFilters } from "./filters";
@@ -35,10 +35,14 @@ export default async function InvoicesPage({
     scanId: params.scan || undefined,
   };
 
-  const [allInvoices, dbSuppliers, scanList] = await Promise.all([
-    getInvoices(organizationId, filters),
+  const [allInvoices, dbSuppliers, scanList, brandCountRows] = await Promise.all([
+    // Bumped from the 500 default so the on-screen list doesn't lag far behind
+    // the dashboard total. Supplier completeness no longer depends on this (it
+    // uses the uncapped aggregate below).
+    getInvoices(organizationId, filters, 2000),
     getSuppliers(organizationId),
     getScanListForFilter(organizationId),
+    getSupplierBrandCounts(organizationId),
   ]);
 
   // Build supplier list FROM the current visible result set so the panel
@@ -49,18 +53,25 @@ export default async function InvoicesPage({
   // Team" collapse into one supplier chip with aggregated count.
   const dbSupplierByKey = new Map(dbSuppliers.map((s) => [s.name.toLowerCase(), s]));
 
+  // Build supplier brand counts from the UNCAPPED aggregate (every invoice in
+  // the org), not the capped on-screen list — otherwise suppliers whose rows
+  // fall outside the visible window vanish from the panel + Companies filter.
+  // Rows that canonicalize to an empty key (e.g. a From header with no parseable
+  // domain) are bucketed under "unknown" so they remain visible/selectable
+  // instead of being silently dropped.
   const invoiceBrandCounts = new Map<string, { count: number }>();
-  for (const inv of allInvoices) {
-    const key = canonicalSupplierKey({
-      company: inv.company,
-      senderDomain: inv.senderDomain,
-    });
-    if (!key) continue;
+  for (const row of brandCountRows) {
+    const key =
+      canonicalSupplierKey({
+        company: row.company,
+        senderDomain: row.senderDomain,
+      }) || "unknown";
+    const n = typeof row._count === "number" ? row._count : 1;
     const entry = invoiceBrandCounts.get(key);
     if (entry) {
-      entry.count++;
+      entry.count += n;
     } else {
-      invoiceBrandCounts.set(key, { count: 1 });
+      invoiceBrandCounts.set(key, { count: n });
     }
   }
 

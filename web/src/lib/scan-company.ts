@@ -85,37 +85,55 @@ export function extractCompany(sender?: string): string | undefined {
   return brand.charAt(0).toUpperCase() + brand.slice(1);
 }
 
-/** For PayPal receipts, extract the actual vendor from the subject line.
- *  e.g. "Receipt for Your Payment to Shopify International" → "Shopify".
- *  Works for ALL PayPal vendors, not just hardcoded names.
+/** Clean a captured merchant string: drop a leading amount, strip business
+ *  suffixes and surrounding punctuation/bidi marks. */
+function cleanCapturedVendor(raw: string): string {
+  return raw
+    .replace(/[‎‏‪-‮⁦-⁩]/g, "")
+    .replace(/^(?:US)?[$₪€£]?\s?[\d,]+\.\d{2}\s*(?:USD|ILS|EUR|GBP|CAD|AUD)?\s*(?:to\s+|ל[-־]?\s*)?/i, "")
+    .replace(/\s+international\s*$/i, "")
+    .replace(/,?\s*(?:inc\.?|ltd\.?|llc\.?|gmbh|s\.?a\.?|b\.?v\.?|pvt\.?|pte\.?|ab)\s*$/i, "")
+    .replace(/[."'\s־-]+$/u, "")
+    .trim();
+}
+
+/** For payment-PROCESSOR receipts (PayPal, Stripe), the sender domain is the
+ *  processor, not the real merchant — extract the merchant from the subject.
+ *    "Receipt for Your Payment to Shopify International"  → "Shopify"   (PayPal)
+ *    "You paid $9.99 to Spotify"                          → "Spotify"   (PayPal)
+ *    "קבלה עבור התשלום שלך ל-Higgsfield"                  → "Higgsfield" (PayPal HE)
+ *    "Your receipt from Anthropic, PBC"                   → "Anthropic" (Stripe)
+ *  Returns undefined for non-processor senders (their domain brand is correct).
  */
 export function extractVendorFromSubject(subject?: string, sender?: string): string | undefined {
   if (!subject || !sender) return undefined;
   const domain = extractDomain(sender);
   if (!domain) return undefined;
   const domainLower = domain.toLowerCase();
-  // Only apply to PayPal senders
-  if (!domainLower.includes("paypal")) return undefined;
+  const isPayPal = domainLower.includes("paypal");
+  const isStripe = domainLower.includes("stripe");
+  if (!isPayPal && !isStripe) return undefined;
 
-  // Match PayPal receipt subject formats (EN). The amount may sit between the
-  // verb and the merchant ("You paid $9.99 to Spotify", "You sent a payment of
-  // $29.00 USD to Shopify"), so we accept an optional amount inside the match
-  // AND strip any leading amount from the captured vendor below.
-  //   "Receipt for Your Payment to [VENDOR]"
-  //   "You sent a payment (of $X) to [VENDOR]"
-  //   "You paid ($X to) [VENDOR]"
-  const m = subject.match(
-    /(?:payment\s+to|paid\s+to|sent\s+(?:a\s+payment\s+)?(?:of\s+\S+\s+)?(?:\S+\s+)?to|you\s+paid)\s+(.+)/i
-  );
-  if (!m) return undefined;
+  const patterns: RegExp[] = isPayPal
+    ? [
+        // English: "...payment to X", "you paid ($amt to) X", "sent (a payment of $amt) to X"
+        /(?:payment\s+to|paid\s+to|sent\s+(?:a\s+payment\s+)?(?:of\s+\S+\s+)?(?:\S+\s+)?to|you\s+paid)\s+(.+)/i,
+        // Hebrew: "...ל-VENDOR" at end ("התשלום שלך ל-X", "שילמת ל-X", "קבלה ... ל-X")
+        /(?:ל[-־]\s*)([^\n,]+)$/,
+      ]
+    : [
+        // Stripe: "receipt from X", "your receipt from X", "invoice from X"
+        /(?:receipt|invoice)\s+from\s+(.+)/i,
+      ];
 
-  // Clean vendor name: drop a leading amount ("$9.99 to ", "29.00 USD to "),
-  // then strip trailing "International", "Inc.", "Ltd.", etc.
-  const vendor = m[1]
-    .replace(/^(?:US)?[$₪€£]?\s?[\d,]+\.\d{2}\s*(?:USD|ILS|EUR|GBP|CAD|AUD)?\s*(?:to\s+)?/i, "")
-    .replace(/\s+international\s*$/i, "")
-    .replace(/,?\s*(?:inc\.?|ltd\.?|llc\.?|gmbh|s\.?a\.?|b\.?v\.?|pvt\.?)\s*$/i, "")
-    .trim();
+  let vendor = "";
+  for (const re of patterns) {
+    const m = subject.match(re);
+    if (m && m[1]) {
+      vendor = cleanCapturedVendor(m[1]);
+      if (vendor) break;
+    }
+  }
   if (!vendor) return undefined;
 
   // Normalize known brand variants

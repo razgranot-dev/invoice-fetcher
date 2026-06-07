@@ -157,6 +157,22 @@ def test_real_receipt_is_included(name, sender, subject, body, atts):
 
 # ── _SUBJECT_WEAK shadowing regression: a weak word before the hard keyword ──
 
+def test_sparse_known_domain_receipt_not_dropped():
+    """A sparse amount-only HTML receipt from a known billing domain (no PDF,
+    weak one-word subject) must NOT be demoted to not_invoice by the
+    no_attachment_weak_signals penalty — domain reputation spares it. It should
+    be persisted (at least 'possible')."""
+    res = _classify(
+        "billing@render.com",
+        "Render receipt",
+        "You were charged $7.00",
+    )
+    assert res["classification_tier"] in PERSISTED_TIERS, (
+        f"sparse known-domain receipt dropped as {res['classification_tier']} "
+        f"(score={res['classification_score']}) — no_attachment penalty regressed."
+    )
+
+
 def test_billing_invoice_subject_not_dropped():
     """'billing' (weak, 5pts) used to shadow 'invoice' (hard evidence). The
     email then had no hard evidence and was dropped as not_invoice. It must

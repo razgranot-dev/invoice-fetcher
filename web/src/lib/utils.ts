@@ -134,7 +134,10 @@ export function cleanDomainName(raw: string): string {
 /**
  * Strip noise suffixes/prefixes from a company display name.
  * "gett reciept" → "gett", "Amazon Billing" → "Amazon"
- * Single-word names are never changed. Returns "" only if input is empty.
+ * Returns "" when the name is empty OR collapses to a single pure-noise token
+ * ("Billing", "Receipts", "noreply") — the caller then falls through to the
+ * domain brand instead of creating a bogus "Billing"/"Receipts" supplier that
+ * splits a real vendor's invoices across phantom chips.
  */
 export function cleanCompanyName(name: string): string {
   if (!name) return "";
@@ -144,6 +147,10 @@ export function cleanCompanyName(name: string): string {
   }
   while (words.length > 1 && NOISE_SUBDOMAINS.has(words[0].toLowerCase())) {
     words.shift();
+  }
+  // A lone remaining token that is itself pure noise is not a company name.
+  if (words.length === 1 && NOISE_SUBDOMAINS.has(words[0].toLowerCase())) {
+    return "";
   }
   return words.join(" ");
 }

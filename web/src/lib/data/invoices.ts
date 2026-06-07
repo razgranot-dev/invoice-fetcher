@@ -114,6 +114,22 @@ export async function getRecentInvoices(organizationId: string, limit = 10) {
   });
 }
 
+/**
+ * Uncapped (company, senderDomain) counts across ALL of an org's invoices.
+ * The supplier panel + Companies filter MUST be derived from this, not from the
+ * capped invoice list — otherwise an org with >500 invoices loses every
+ * supplier whose rows fall outside the most-recent 500 (the "missing suppliers"
+ * regression). Grouped, so it returns one row per distinct (company,domain),
+ * not every invoice.
+ */
+export async function getSupplierBrandCounts(organizationId: string) {
+  return db.invoice.groupBy({
+    by: ["company", "senderDomain"],
+    where: { organizationId },
+    _count: true,
+  });
+}
+
 export async function getCompanyList(organizationId: string) {
   const companies = await db.invoice.groupBy({
     by: ["company"],

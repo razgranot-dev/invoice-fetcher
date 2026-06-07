@@ -180,7 +180,11 @@ class ScanRequest(BaseModel):
     token_expiry: str | None = Field(None, max_length=64)
     keywords: list[str] = Field(default=[], max_length=20)
     days_back: int = Field(30, ge=1, le=730)
-    unread_only: bool = True
+    # Default False: scanning ALL mail (read + unread) is the correct default —
+    # most invoices are already read. A True default was a silent-exclusion
+    # footgun if any caller omitted the field. The web always sends an explicit
+    # value; this only affects direct/diagnostic callers.
+    unread_only: bool = False
     scan_id: str = Field("", max_length=64)
 
 

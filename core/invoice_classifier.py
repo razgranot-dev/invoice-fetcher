@@ -982,8 +982,16 @@ def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
                 _add("attachment_pdf", 10, fname[:50])
             break
 
-    # Penalty: weak signals without attachment
-    if not has_pdf and not attachments:
+    # Penalty: weak signals without attachment. Skip it when the sender is a
+    # known invoice/billing domain — a sparse amount-only HTML receipt from
+    # e.g. render.com / stripe.com is genuine, and the -10 was pushing it below
+    # threshold into not_invoice (the "real receipt downgraded" edge). The
+    # domain reputation is sufficient evidence to spare the penalty.
+    sender_is_invoice_domain = any(
+        sender_domain == d or sender_domain.endswith("." + d)
+        for d in _INVOICE_SENDER_DOMAINS
+    )
+    if not has_pdf and not attachments and not sender_is_invoice_domain:
         if score > 0 and score < 30 and body_strong_hits == 0:
             _add("no_attachment_weak_signals", -10, "weak signals without attachment")
 
