@@ -102,6 +102,14 @@ class TestBuildQueryAnchors:
         for kw in ("from:invoice", "from:billing", "from:receipt", "from:payments"):
             assert kw in q, f"Missing from-local-part anchor: {kw}"
 
+    def test_query_has_paypal_processor_anchor(self, connector):
+        """from:paypal matches the 'PayPal' display name AND every paypal.*
+        domain regardless of subject/locale. Root-cause fix for PayPal
+        receipts with short/opaque/Hebrew subjects that the subject-keyword
+        anchors miss and Gmail doesn't reliably tag category:purchases."""
+        q = connector.build_query([], days_back=30, unread_only=False)
+        assert "from:paypal" in q, "Missing PayPal processor anchor: from:paypal"
+
 
 class TestBuildQueryFilenameSearch:
     """Verify attachment filename search is included (broader keyword search,

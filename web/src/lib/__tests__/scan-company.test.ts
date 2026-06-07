@@ -83,6 +83,16 @@ describe("extractVendorFromSubject — PayPal vendor extraction", () => {
       extractVendorFromSubject("Receipt for your payment to Shopify", "billing@stripe.com")
     ).toBeUndefined();
   });
+  it("strips a leading amount in 'You paid $X to VENDOR'", () => {
+    expect(
+      extractVendorFromSubject("You paid $9.99 USD to Spotify", "service@paypal.com")
+    ).toBe("Spotify");
+  });
+  it("handles 'You sent a payment of $X to VENDOR'", () => {
+    expect(
+      extractVendorFromSubject("You sent a payment of $29.00 USD to Shopify", "service@paypal.com")
+    ).toBe("Shopify");
+  });
 });
 
 describe("normalizeCompanyName — brand variants", () => {

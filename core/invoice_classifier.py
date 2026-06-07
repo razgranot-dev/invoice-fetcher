@@ -22,6 +22,8 @@ Tiers:
 import re
 from typing import Any
 
+from core import paypal_provider
+
 # ── Classification tiers ─────────────────────────────────────────────────────
 
 TIER_CONFIRMED = "confirmed_invoice"
@@ -991,6 +993,22 @@ def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
             _add("sender_invoice_domain", pts, domain)
             break
 
+    # 2i. PayPal provider adapter — payment processors send HTML-only,
+    # short/localized-subject receipts that the generic subject/body keywords
+    # under-score (e.g. a bare "PayPal" subject, or Hebrew "פרטי העסקה"). When
+    # the provider confirms a genuine money movement (and NOT a security /
+    # marketing / login / failed-payment email — those were already dropped in
+    # Phase 1c and are re-checked inside the provider), grant hard evidence and
+    # a strong score so the receipt lands in the report instead of being
+    # demoted to "possible"/"not_invoice" and silently excluded. See
+    # core/paypal_provider.py. Non-PayPal senders are untouched (returns None).
+    paypal_doc_type: str | None = None
+    paypal_intent = paypal_provider.classify_intent(email_data)
+    if paypal_intent and paypal_intent.get("is_transaction"):
+        paypal_doc_type = paypal_intent.get("doc_type")
+        _add("paypal_transaction", 35, paypal_doc_type or "")
+        has_hard_evidence = True
+
     # ══════════════════════════════════════════════════════════════════════
     # PHASE 3: NEGATIVE SIGNAL ADJUSTMENTS
     # ══════════════════════════════════════════════════════════════════════
@@ -1039,11 +1057,18 @@ def classify_email(email_data: dict[str, Any]) -> dict[str, Any]:
     else:
         tier = TIER_NOT
 
-    return {
+    result: dict[str, Any] = {
         "classification_tier": tier,
         "classification_score": score,
         "classification_signals": signals,
     }
+    if paypal_doc_type:
+        # Provider-specific document type (receipt / invoice / payment
+        # confirmation). Surfaced for observability + downstream display;
+        # purely additive — non-PayPal emails never carry this key.
+        result["provider"] = "paypal"
+        result["paypal_doc_type"] = paypal_doc_type
+    return result
 
 
 def classify_results(results: list[dict]) -> list[dict]:

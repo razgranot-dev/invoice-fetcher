@@ -19,6 +19,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
+from core import paypal_provider
+
 _log = logging.getLogger(__name__)
 
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -461,6 +463,20 @@ class GmailConnector:
         "billing", "payments", "payment", "noreply", "no-reply",
     ]
 
+    # Brand `from:` anchors for payment PROCESSORS whose transactional subjects
+    # are short, opaque, or localized ("You sent $X to Y", "Transaction
+    # details", Hebrew "הקבלה שלך") — these slip through the subject-keyword and
+    # generic from-local-part anchors above, and Gmail does not reliably tag
+    # them `category:purchases`. A single `from:paypal` clause matches the
+    # "PayPal" display name AND every paypal.* domain regardless of subject or
+    # locale, so EVERY PayPal email is fetched and handed to the classifier.
+    # Root-cause fix for "PayPal receipts missing entirely" (see
+    # core/paypal_provider.py). Sourced from the provider so there is one
+    # source of truth. Kept tiny so the query stays well under Gmail's limit.
+    _QUERY_PROCESSOR_FROM_TOKENS: list[str] = [
+        *paypal_provider.discovery_query_tokens(),
+    ]
+
     # Hard cap on query length. Gmail's q parameter has a practical upper
     # bound around 2KB; longer queries can silently return empty results
     # or 400 errors. We log a warning if we approach this.
@@ -519,6 +535,12 @@ class GmailConnector:
         # 5. Sender local-part heuristics — broader than any domain list
         for kw in self._QUERY_FROM_KEYWORDS:
             clauses.append(f"from:{kw}")
+
+        # 6. Payment-processor brand anchors (PayPal etc.) — guarantees their
+        #    localized / opaque-subject receipts are fetched. See
+        #    _QUERY_PROCESSOR_FROM_TOKENS.
+        for token in self._QUERY_PROCESSOR_FROM_TOKENS:
+            clauses.append(f"from:{token}")
 
         query = " ".join(parts) + " (" + " OR ".join(clauses) + ")"
 

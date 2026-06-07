@@ -42,6 +42,7 @@ from core.gmail_connector import GmailConnector
 from core.invoice_classifier import classify_results
 from core.amount_extractor import enrich_results
 from core.body_parser import BodyParser
+from core import paypal_provider
 
 # Route the worker's own logs through the project logger (console + file, with
 # the standard format used by core/* modules) so the scan funnel + per-reject
@@ -327,10 +328,57 @@ async def run_scan(req: ScanRequest):
             _CLASSIFY_BATCH = 25
             n_results = len(results)
             classified = 0
+            # PayPal ingestion funnel — discovered → transaction candidate →
+            # parsed (structured fields extracted) → skipped (+reason).
+            pp_discovered = 0
+            pp_candidates = 0
+            pp_parsed = 0
+            pp_skipped = 0
             for r in results:
                 _t = _time.perf_counter()
                 r.update(_classify_one(r))
                 _dur = _time.perf_counter() - _t
+
+                # ── PayPal provider funnel + structured extraction ──────────
+                # Runs only for PayPal senders; everything else is untouched.
+                if paypal_provider.is_paypal_sender(r.get("sender")):
+                    pp_discovered += 1
+                    if r.get("classification_tier") != "not_invoice" or r.get("provider") == "paypal":
+                        pp_candidates += 1
+                        try:
+                            pp = paypal_provider.extract_paypal(r)
+                            r["paypal"] = pp
+                            r["paypal_dedup_key"] = paypal_provider.dedup_key(pp)
+                            if pp.get("merchant") and not r.get("company"):
+                                r["company"] = pp["merchant"]
+                            # Surface key structured fields in notes (no secrets,
+                            # no tokens) so they show in the dashboard + export.
+                            note_bits = []
+                            if pp.get("doc_type"):
+                                note_bits.append(f"PayPal {pp['doc_type'].replace('_', ' ')}")
+                            if pp.get("merchant"):
+                                note_bits.append(f"to {pp['merchant']}")
+                            if pp.get("transaction_id"):
+                                note_bits.append(f"txn {pp['transaction_id']}")
+                            if pp.get("status"):
+                                note_bits.append(f"status {pp['status']}")
+                            if note_bits:
+                                existing = (r.get("notes") or "").strip()
+                                r["notes"] = (existing + " | " if existing else "") + " · ".join(note_bits)
+                            pp_parsed += 1
+                        except Exception as _pp_exc:  # never let extraction break a scan
+                            logger.warning(
+                                "[Scan %s] PayPal extract failed — gmail_message_id=%s reason=%s",
+                                req.scan_id, r.get("uid", "?"),
+                                f"{type(_pp_exc).__name__}: {str(_pp_exc)[:120]}",
+                            )
+                    else:
+                        pp_skipped += 1
+                        logger.debug(
+                            "[Scan %s] PayPal SKIPPED (non-transactional) — subject=%r score=%s",
+                            req.scan_id, (r.get("subject") or "")[:80],
+                            r.get("classification_score"),
+                        )
                 # Per-email rejection reason (DEBUG only — guarded so the
                 # signal formatting cost is skipped unless LOG_LEVEL=DEBUG).
                 if r.get("classification_tier") == "not_invoice" and logger.isEnabledFor(logging.DEBUG):
@@ -407,6 +455,15 @@ async def run_scan(req: ScanRequest):
             logger.info(
                 "[Scan %s] TIER COUNTS — classified=%d | confirmed=%d likely=%d possible=%d not_invoice=%d",
                 req.scan_id, len(enriched), confirmed, likely, possible, not_inv,
+            )
+
+            # PayPal-specific funnel — makes "missing PayPal" debuggable at a
+            # glance: how many PayPal emails were fetched, how many were real
+            # transaction candidates, how many parsed into structured records,
+            # and how many were skipped as non-transactional (security/marketing).
+            logger.info(
+                "[Scan %s] PAYPAL FUNNEL — discovered=%d candidates=%d parsed=%d skipped=%d",
+                req.scan_id, pp_discovered, pp_candidates, pp_parsed, pp_skipped,
             )
 
             yield json.dumps({

@@ -97,16 +97,22 @@ export function extractVendorFromSubject(subject?: string, sender?: string): str
   // Only apply to PayPal senders
   if (!domainLower.includes("paypal")) return undefined;
 
-  // Match PayPal receipt subject formats:
+  // Match PayPal receipt subject formats (EN). The amount may sit between the
+  // verb and the merchant ("You paid $9.99 to Spotify", "You sent a payment of
+  // $29.00 USD to Shopify"), so we accept an optional amount inside the match
+  // AND strip any leading amount from the captured vendor below.
   //   "Receipt for Your Payment to [VENDOR]"
-  //   "Receipt for Payment to [VENDOR]"
-  //   "You sent a payment to [VENDOR]"
-  //   "You paid [VENDOR]"
-  const m = subject.match(/(?:payment\s+to|paid\s+to|you\s+paid)\s+(.+)/i);
+  //   "You sent a payment (of $X) to [VENDOR]"
+  //   "You paid ($X to) [VENDOR]"
+  const m = subject.match(
+    /(?:payment\s+to|paid\s+to|sent\s+(?:a\s+payment\s+)?(?:of\s+\S+\s+)?(?:\S+\s+)?to|you\s+paid)\s+(.+)/i
+  );
   if (!m) return undefined;
 
-  // Clean vendor name: strip trailing "International", "Inc.", "Ltd.", etc.
+  // Clean vendor name: drop a leading amount ("$9.99 to ", "29.00 USD to "),
+  // then strip trailing "International", "Inc.", "Ltd.", etc.
   const vendor = m[1]
+    .replace(/^(?:US)?[$₪€£]?\s?[\d,]+\.\d{2}\s*(?:USD|ILS|EUR|GBP|CAD|AUD)?\s*(?:to\s+)?/i, "")
     .replace(/\s+international\s*$/i, "")
     .replace(/,?\s*(?:inc\.?|ltd\.?|llc\.?|gmbh|s\.?a\.?|b\.?v\.?|pvt\.?)\s*$/i, "")
     .trim();
