@@ -1,8 +1,7 @@
 import { Suspense } from "react";
-import { FileText, Download } from "lucide-react";
+import { FileText } from "lucide-react";
 import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
-import { Button } from "@/components/ui/button";
 import { requireOrganization } from "@/lib/session";
 import { getInvoices, getScanListForFilter } from "@/lib/data/invoices";
 import { getSuppliers } from "@/lib/data/suppliers";
@@ -11,6 +10,7 @@ import { InvoiceFilters } from "./filters";
 import { SupplierPanel } from "./supplier-panel";
 import { InvoiceList } from "./invoice-list";
 import { ExportWordButton } from "./export-word-button";
+import { ExportCsvButton } from "./export-csv-button";
 import { InvoiceSelectionProvider } from "./selection-context";
 
 export default async function InvoicesPage({
@@ -109,7 +109,6 @@ export default async function InvoicesPage({
   if (params.company) exportQuery.set("company", params.company);
   if (params.scan) exportQuery.set("scanId", params.scan);
   exportQuery.set("reportStatus", "INCLUDED");
-  const exportUrl = `/api/invoices/export?${exportQuery.toString()}`;
 
   const serialized = visibleInvoices.map((inv) => ({
     id: inv.id,
@@ -140,19 +139,10 @@ export default async function InvoicesPage({
           description={`${visibleInvoices.length} results \u00b7 ${includedCount} included${reviewCount > 0 ? ` \u00b7 ${reviewCount} for review` : ""}`}
         >
           <div className="flex gap-2">
-            {includedCount > 0 ? (
-              <Button variant="outline" size="sm" asChild>
-                <a href={exportUrl}>
-                  <Download className="h-3.5 w-3.5" />
-                  Export CSV
-                </a>
-              </Button>
-            ) : (
-              <Button variant="outline" size="sm" disabled>
-                <Download className="h-3.5 w-3.5" />
-                Export CSV
-              </Button>
-            )}
+            <ExportCsvButton
+              baseQuery={exportQuery.toString()}
+              disabled={includedCount === 0}
+            />
             <ExportWordButton
               filters={{
                 search: params.search,

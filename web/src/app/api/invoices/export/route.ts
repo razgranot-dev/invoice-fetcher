@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { getInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
 import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
+import { validateInvoiceIds, selectExportableInvoices } from "@/lib/export-selection";
 
 function escapeCsv(value: string): string {
   // Prevent CSV formula injection: prefix dangerous leading chars with a
@@ -66,29 +67,51 @@ export async function GET(req: NextRequest) {
   const reportStatus = rawReportStatus === "INCLUDED" || rawReportStatus === "EXCLUDED"
     ? rawReportStatus : "INCLUDED";
 
-  const rawInvoices = await getInvoices(
-    orgId,
-    { search, tier, company, scanId, reportStatus },
-    10000
-  );
+  // Selection-mode: when the client passes ?ids=a,b,c those checked rows ARE
+  // the export — same contract as Word/ZIP. Filters/supplier-exclusion are
+  // bypassed so CSV behaves identically to every other export action.
+  const rawIds = searchParams.get("ids");
+  const idsArray = rawIds ? rawIds.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const idsValidation = validateInvoiceIds(idsArray);
+  if (!idsValidation.valid) {
+    return new Response(idsValidation.error, { status: 400 });
+  }
+  const invoiceIds = idsValidation.invoiceIds;
+  const useExplicitSelection = invoiceIds !== undefined;
 
-  // Enforce supplier relevance — filter out invoices from excluded suppliers
-  const excludedSuppliers = await db.supplier.findMany({
-    where: { organizationId: orgId, isRelevant: false },
-    select: { name: true },
-  });
+  const rawInvoices = useExplicitSelection
+    ? await getInvoices(orgId, { invoiceIds }, 10000)
+    : await getInvoices(orgId, { search, tier, company, scanId, reportStatus }, 10000);
+
+  // Excluded suppliers only apply in filter-mode; selectExportableInvoices
+  // short-circuits the brand check when an explicit selection is in play.
+  const excludedSuppliers = useExplicitSelection
+    ? []
+    : await db.supplier.findMany({
+        where: { organizationId: orgId, isRelevant: false },
+        select: { name: true },
+      });
   const excludedBrands = new Set(
     excludedSuppliers.map((s) => s.name.toLowerCase())
   );
-  const invoices =
-    excludedBrands.size > 0
-      ? rawInvoices.filter((inv) => {
-          const brand =
-            cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
-            (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null);
-          return !(brand && excludedBrands.has(brand));
-        })
-      : rawInvoices;
+
+  // For CSV, filter-mode keeps ALL tiers (a CSV is a data dump, not the
+  // report) — pass ZIP_SCREENSHOTS so the WORD confirmed/likely whitelist is
+  // not applied. Selection-mode intersects to exactly the checked rows.
+  const invoices = selectExportableInvoices({
+    invoices: rawInvoices,
+    format: "ZIP_SCREENSHOTS",
+    invoiceIds,
+    excludedBrands,
+    brandResolver: (inv) =>
+      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
+      (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null),
+  });
+
+  console.log(
+    `[Export CSV] mode=${useExplicitSelection ? "selected" : "filtered"} ` +
+    `selectedIdsCount=${invoiceIds?.length ?? 0} exportedInvoicesCount=${invoices.length}`
+  );
 
   const headers = [
     "Invoice ID",
