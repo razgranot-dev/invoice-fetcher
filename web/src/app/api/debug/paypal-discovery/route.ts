@@ -25,13 +25,14 @@ export async function GET(req: NextRequest) {
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if ((session as any).role !== "OWNER") {
-    return NextResponse.json({ error: "Owner only" }, { status: 403 });
-  }
+  // Any authenticated member can run this — it only ever touches the caller's
+  // OWN organization + mailbox (same exposure as /api/health/scan-readiness).
+  // OWNER-only was an unnecessary friction point during the live outage.
   const orgId = (session as any).organizationId as string | undefined;
   if (!orgId) {
     return NextResponse.json({ error: "No organization" }, { status: 403 });
   }
+  const role = (session as any).role ?? "(unknown)";
 
   const daysParam = Number(req.nextUrl.searchParams.get("days") ?? "365");
   const daysBack = Number.isFinite(daysParam)
@@ -67,6 +68,7 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
+    role,
     worker: {
       ok: health.ok,
       url: process.env.WORKER_URL ?? "(unset)",

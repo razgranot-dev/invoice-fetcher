@@ -13,6 +13,7 @@ import {
   Receipt,
   ChevronLeft,
   Sparkles,
+  Stethoscope,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 
@@ -28,6 +29,7 @@ const navigation = [
 const secondaryNav = [
   { name: "Settings", href: "/settings", icon: Settings },
   { name: "Billing", href: "/billing", icon: CreditCard },
+  { name: "Diagnostics", href: "/diagnostics", icon: Stethoscope },
 ];
 
 export function Sidebar() {
