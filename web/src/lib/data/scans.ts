@@ -38,14 +38,21 @@ export async function getScans(organizationId: string) {
   }));
 }
 
+/**
+ * Row cap for the scan detail page. Browsing beyond this happens on the
+ * Invoices page (`/invoices?scan={id}`), which owns filtering/pagination —
+ * the detail page shows a capped preview plus accurate aggregate counts.
+ */
+export const SCAN_DETAIL_INVOICE_CAP = 200;
+
 export async function getScanById(organizationId: string, scanId: string) {
-  return db.scan.findFirst({
+  const scan = await db.scan.findFirst({
     where: { id: scanId, organizationId },
     include: {
       connection: { select: { email: true } },
       invoices: {
         orderBy: { date: "desc" },
-        take: 5000,
+        take: SCAN_DETAIL_INVOICE_CAP,
         select: {
           id: true,
           scanId: true,
@@ -68,6 +75,26 @@ export async function getScanById(organizationId: string, scanId: string) {
       },
     },
   });
+  if (!scan) return null;
+
+  // Aggregate counts come from the DB, not the (capped) invoice array —
+  // otherwise a scan with more than SCAN_DETAIL_INVOICE_CAP rows would
+  // silently undercount "in report" / "for review" in the header.
+  const [invoiceTotal, statusCounts] = await Promise.all([
+    db.invoice.count({ where: { organizationId, scanId } }),
+    db.invoice.groupBy({
+      by: ["reportStatus"],
+      where: { organizationId, scanId },
+      _count: true,
+    }),
+  ]);
+  const reportCounts = { included: 0, excluded: 0 };
+  for (const row of statusCounts) {
+    if (row.reportStatus === "INCLUDED") reportCounts.included = row._count;
+    else if (row.reportStatus === "EXCLUDED") reportCounts.excluded = row._count;
+  }
+
+  return { ...scan, _invoiceTotal: invoiceTotal, _reportCounts: reportCounts };
 }
 
 export async function createScan(
@@ -175,23 +202,44 @@ export async function cancelScan(organizationId: string, scanId: string) {
   return result.count > 0 ? true : null;
 }
 
+/** A RUNNING scan whose last progress write (Scan.updatedAt is @updatedAt,
+ *  auto-touched on every updateScanProgress) is older than this is dead —
+ *  the worker streams progress at least every second while alive. */
+export const STALE_PROGRESS_MS = 3 * 60 * 1000;
+/** Fallback for scans that never wrote a single progress line. */
+export const SCAN_HARD_TIMEOUT_MS = 15 * 60 * 1000;
+
 /**
- * Recover scans stuck in RUNNING for more than 15 minutes.
- * Called opportunistically from the scan list.
+ * Pure where-clause for stuck-scan recovery — extracted so the cutoff
+ * arithmetic is unit-testable (web/src/lib/__tests__/scan-timeouts.test.ts).
+ */
+export function stuckScanWhere(organizationId: string, now: Date) {
+  return {
+    organizationId,
+    status: "RUNNING" as const,
+    OR: [
+      { updatedAt: { lt: new Date(now.getTime() - STALE_PROGRESS_MS) } },
+      { startedAt: { lt: new Date(now.getTime() - SCAN_HARD_TIMEOUT_MS) } },
+    ],
+  };
+}
+
+/**
+ * Recover scans stuck in RUNNING. Keys primarily on Scan.updatedAt going
+ * stale (> 3 min without a progress write — progress writes are throttled
+ * to 1s, so a live scan touches it constantly), with the original
+ * startedAt > 15 min rule kept as a fallback for scans that died before
+ * their first progress write. Called opportunistically from the scan list
+ * and from POST /api/scans before the duplicate-scan guard.
  */
 export async function recoverStuckScans(organizationId: string) {
-  const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
   return db.scan.updateMany({
-    where: {
-      organizationId,
-      status: "RUNNING",
-      startedAt: { lt: fifteenMinAgo },
-    },
+    where: stuckScanWhere(organizationId, new Date()),
     data: {
       status: "FAILED",
       progress: 100,
       progressMessage: "Timed out — scan did not complete",
-      errorMessage: "Scan timed out after 15 minutes",
+      errorMessage: "Scan stopped making progress and was marked failed",
       completedAt: new Date(),
     },
   });

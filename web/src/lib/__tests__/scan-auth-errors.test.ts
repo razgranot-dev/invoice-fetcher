@@ -1,36 +1,21 @@
 /**
  * Regression guard for the "scan fails every time" incident.
  *
- * Verifies the error-message extraction logic that lives inline in
- * web/src/app/api/scans/route.ts. Keeping it as a unit-testable pure
- * function below means future edits to that catch block stay safe.
+ * Tests the REAL sanitizer (web/src/lib/scan-errors.ts) that both error
+ * paths in web/src/app/api/scans/route.ts share — the thrown-error catch
+ * block AND the worker `result.error` branch. Previously this file
+ * duplicated the regexes inline, which let the route and the test drift
+ * apart; importing the single source of truth makes that impossible.
  */
 
 import { describe, test, expect } from "vitest";
-
-/**
- * Lifted from the catch block in web/src/app/api/scans/route.ts. Must stay
- * in sync — see that file's comment block. The job of this helper is to
- * convert a raw worker/dispatch error into a user-safe message:
- *   • AUTH_ERROR → preserved (scope URLs intact, prefixed for the user)
- *   • otherwise  → paths and DSNs scrubbed, truncated
- */
-function extractSafeScanError(raw: string): string {
-  const authMatch = raw.match(/AUTH_ERROR:?\s*([^"}]+)/i);
-  if (authMatch) {
-    return ("Gmail authentication failed. " + authMatch[1].trim()).slice(0, 400);
-  }
-  return raw
-    .replace(/(?:\/[^\s:]+)+/g, "[path]")
-    .replace(/(?:postgres|mysql|redis|mongodb)\S+/gi, "[redacted]")
-    .slice(0, 300);
-}
+import { sanitizeScanError } from "@/lib/scan-errors";
 
 describe("scan error sanitization", () => {
   test("preserves AUTH_ERROR message including scope URLs", () => {
     const raw =
       'Worker error 401: {"detail":"Gmail auth failed: AUTH_ERROR: Gmail permission missing from this connection. Reconnect your Google account and check the Gmail box on the consent screen. Granted scopes: [email, openid, profile]"}';
-    const out = extractSafeScanError(raw);
+    const out = sanitizeScanError(raw);
     expect(out).toContain("Gmail authentication failed");
     expect(out).toContain("Gmail permission missing");
     expect(out).toContain("Granted scopes");
@@ -38,9 +23,18 @@ describe("scan error sanitization", () => {
     expect(out).not.toContain("[path]");
   });
 
+  test("handles bare AUTH_ERROR without the Worker-error JSON wrapper", () => {
+    // result.error arrives as bare str(e) from the worker generator — no
+    // `Worker error 401: {...}` framing. The regex must still match.
+    const raw = "AUTH_ERROR: Token has been expired or revoked.";
+    const out = sanitizeScanError(raw);
+    expect(out).toContain("Gmail authentication failed");
+    expect(out).toContain("Token has been expired or revoked");
+  });
+
   test("strips file paths from generic errors", () => {
     const raw = "ENOENT: no such file /var/www/web/.next/server/app/x.js";
-    const out = extractSafeScanError(raw);
+    const out = sanitizeScanError(raw);
     expect(out).toContain("[path]");
     expect(out).not.toContain("/var/www");
   });
@@ -48,25 +42,41 @@ describe("scan error sanitization", () => {
   test("strips postgres connection strings", () => {
     const raw =
       "Connection failed: postgresql://user:pass@host.neon.tech:5432/db?sslmode=require";
-    const out = extractSafeScanError(raw);
+    const out = sanitizeScanError(raw);
     expect(out).toContain("[redacted]");
     expect(out).not.toContain("pass@host");
   });
 
+  test("worker result.error with both a path and a DSN is fully scrubbed and capped", () => {
+    // Simulates the M3 scenario: the worker's except-block str(e) leaking
+    // library internals through the result.error branch (which previously
+    // skipped sanitization entirely).
+    const raw =
+      "Traceback /usr/lib/python3.13/site-packages/google/auth/transport.py failed; " +
+      "retry gave up connecting to postgres://scanuser:hunter2@db.internal:5432/invoices " +
+      "x".repeat(500);
+    const out = sanitizeScanError(raw);
+    expect(out).not.toContain("/usr/lib");
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain("[path]");
+    expect(out).toContain("[redacted]");
+    expect(out.length).toBeLessThanOrEqual(300);
+  });
+
   test("caps length at 400 chars for AUTH_ERROR", () => {
     const long = "AUTH_ERROR: " + "x".repeat(1000);
-    const out = extractSafeScanError(long);
+    const out = sanitizeScanError(long);
     expect(out.length).toBeLessThanOrEqual(400);
   });
 
   test("caps length at 300 chars for generic errors", () => {
-    const out = extractSafeScanError("y".repeat(1000));
+    const out = sanitizeScanError("y".repeat(1000));
     expect(out.length).toBeLessThanOrEqual(300);
   });
 
   test("handles AUTH_ERROR without colon", () => {
     const raw = "AUTH_ERROR Gmail permission missing";
-    const out = extractSafeScanError(raw);
+    const out = sanitizeScanError(raw);
     expect(out).toContain("Gmail authentication failed");
     expect(out).toContain("Gmail permission missing");
   });

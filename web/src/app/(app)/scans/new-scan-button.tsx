@@ -5,28 +5,40 @@ import { useRouter } from "next/navigation";
 import { Plus, Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+/** Above this many days back, warn that the scan may hit the serverless
+ *  function timeout (soft warning only — submission is never blocked). */
+export const HUGE_SCAN_DAYS = 240;
+
 export function NewScanButton() {
   const [loading, setLoading] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [daysBack, setDaysBack] = useState(90);
   const router = useRouter();
 
   async function handleScan(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setLoading(true);
+    setError(null);
 
     const formData = new FormData(e.currentTarget);
     const keywords = (formData.get("keywords") as string)
       .split(",")
       .map((k) => k.trim())
       .filter(Boolean);
-    const daysBack = parseInt(formData.get("daysBack") as string) || 30;
     const unreadOnly = formData.get("unreadOnly") === "on";
 
     try {
       const res = await fetch("/api/scans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keywords, daysBack, unreadOnly }),
+        body: JSON.stringify({
+          keywords,
+          // Controlled input can transiently hold 0 while the user clears
+          // the field — fall back to the server default range in that case.
+          daysBack: daysBack >= 1 && daysBack <= 730 ? daysBack : 90,
+          unreadOnly,
+        }),
       });
 
       const data = await res.json();
@@ -42,11 +54,14 @@ export function NewScanButton() {
             window.location.href = "/login";
           }
         } else {
-          alert(data.error || "Failed to create scan");
+          // Inline, non-blocking — the dialog stays open so the user can
+          // adjust inputs and retry (previously a blocking alert()).
+          setError(data.error || "Failed to create scan");
         }
         return;
       }
 
+      setError(null);
       setShowForm(false);
       // Navigate to the scan detail page so the user sees live progress
       // (phase, percent, current status) instead of staring at a closed
@@ -57,6 +72,10 @@ export function NewScanButton() {
       } else {
         router.refresh();
       }
+    } catch {
+      // Network-level failure (server down, connection lost) — previously an
+      // unhandled rejection that left the dialog open with zero feedback.
+      setError("Could not reach the server. Check your connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -64,7 +83,14 @@ export function NewScanButton() {
 
   if (!showForm) {
     return (
-      <Button size="sm" variant="glow" onClick={() => setShowForm(true)}>
+      <Button
+        size="sm"
+        variant="glow"
+        onClick={() => {
+          setError(null);
+          setShowForm(true);
+        }}
+      >
         <Plus className="h-3.5 w-3.5" />
         New Scan
       </Button>
@@ -108,19 +134,23 @@ export function NewScanButton() {
               Days back
             </label>
             <p className="text-[11px] text-muted-foreground/70 mt-0.5">
-              30–180 days completes reliably on busy inboxes. 240+ days
-              may exceed the serverless function timeout — the worker
-              still classifies everything but persistence can fail;
-              multi-year archives currently need a self-hosted worker.
+              30–180 days completes reliably on busy inboxes.
             </p>
             <input
               name="daysBack"
               type="number"
-              defaultValue={90}
+              value={daysBack}
+              onChange={(e) => setDaysBack(parseInt(e.target.value) || 0)}
               min={1}
               max={730}
               className="mt-2 w-full rounded-xl border border-border/60 bg-white/60 backdrop-blur-sm px-4 py-3 text-sm outline-none transition-all duration-300 focus:border-primary/30 focus:ring-2 focus:ring-primary/10 focus:bg-white focus:shadow-md focus:shadow-primary/5 text-foreground"
             />
+            {daysBack > HUGE_SCAN_DAYS && (
+              <p className="mt-2 text-[11px] text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                Scans over {HUGE_SCAN_DAYS} days may time out on the hosted
+                worker — consider splitting into shorter ranges.
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2.5">
@@ -137,6 +167,12 @@ export function NewScanButton() {
               Unread only <span className="text-muted-foreground/50">— off by default scans your full inbox</span>
             </label>
           </div>
+
+          {error && (
+            <p className="text-xs text-destructive bg-destructive/8 border border-destructive/15 rounded-lg px-3 py-2 break-words">
+              {error}
+            </p>
+          )}
 
           <div className="flex gap-3 pt-2">
             <Button

@@ -79,9 +79,13 @@ export default async function ScanDetailPage({
       {/* Scan metadata */}
       <div className="card-glow p-6">
         {(() => {
-          const includedCount = scan.invoices.filter((i) => i.reportStatus === "INCLUDED").length;
-          const reviewCount = scan.invoices.filter((i) => i.reportStatus === "EXCLUDED").length;
-          const filteredOut = (scan.processedCount ?? 0) - scan.invoices.length;
+          // Aggregate DB counts (getScanById._reportCounts / _invoiceTotal),
+          // NOT scan.invoices.filter(...) — the invoice array is capped at
+          // SCAN_DETAIL_INVOICE_CAP rows, so filtering it would silently
+          // undercount large scans.
+          const includedCount = scan._reportCounts.included;
+          const reviewCount = scan._reportCounts.excluded;
+          const filteredOut = (scan.processedCount ?? 0) - scan._invoiceTotal;
           return (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-5 text-sm">
               <div>
@@ -93,7 +97,7 @@ export default async function ScanDetailPage({
                 <p className="font-semibold mt-1">{scan.totalMessages}</p>
               </div>
               <div>
-                <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">Included</p>
+                <p className="text-[11px] font-semibold text-muted-foreground/60 tracking-wider uppercase">In report</p>
                 <p className="font-semibold mt-1 text-secondary">{includedCount}</p>
               </div>
               <div>
@@ -119,6 +123,11 @@ export default async function ScanDetailPage({
           );
         })()}
 
+        <p className="mt-4 text-[11px] text-muted-foreground/50">
+          Counts reflect emails currently linked to this scan; duplicates
+          found again by a newer scan move to that scan.
+        </p>
+
         {scan.errorMessage && (
           <div className="mt-5 rounded-xl bg-destructive/8 border border-destructive/15 px-4 py-3 text-sm text-destructive">
             {scan.errorMessage}
@@ -131,12 +140,12 @@ export default async function ScanDetailPage({
         <div className="card-glow overflow-hidden">
           <div className="px-6 py-4 border-b border-border/30 bg-gradient-to-r from-primary/5 to-transparent">
             <h2 className="text-sm font-bold">
-              {scan.invoices.length} Result{scan.invoices.length !== 1 ? "s" : ""} Saved
+              {scan._invoiceTotal} candidate{scan._invoiceTotal !== 1 ? "s" : ""} from this scan
               {(() => {
-                const inc = scan.invoices.filter((i) => i.reportStatus === "INCLUDED").length;
-                const exc = scan.invoices.filter((i) => i.reportStatus === "EXCLUDED").length;
+                const inc = scan._reportCounts.included;
+                const exc = scan._reportCounts.excluded;
                 const parts: string[] = [];
-                if (inc > 0) parts.push(`${inc} included`);
+                if (inc > 0) parts.push(`${inc} in report`);
                 if (exc > 0) parts.push(`${exc} for review`);
                 return parts.length > 0 ? (
                   <span className="font-normal text-muted-foreground/60">
@@ -145,6 +154,17 @@ export default async function ScanDetailPage({
                 ) : null;
               })()}
             </h2>
+            {scan._invoiceTotal > scan.invoices.length && (
+              <p className="text-xs text-muted-foreground/60 mt-1">
+                Showing the {scan.invoices.length} most recent of {scan._invoiceTotal}.{" "}
+                <Link
+                  href={`/invoices?scan=${scan.id}`}
+                  className="text-primary hover:underline font-semibold"
+                >
+                  View all in Invoices
+                </Link>
+              </p>
+            )}
           </div>
           <div className="divide-y divide-border/30">
             {scan.invoices.map((inv) => {

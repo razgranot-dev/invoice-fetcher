@@ -4,17 +4,22 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { createScan, getScans, updateScanStatus, updateScanProgress, recoverStuckScans } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
-import { bulkCreateInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
 import { normalizeCurrency } from "@/lib/utils";
-import { canonicalSupplierKey, canonicalDisplayName } from "@/lib/supplier-canonical";
+import { canonicalSupplierKey, canonicalDisplayName, UNKNOWN_KEY } from "@/lib/supplier-canonical";
 import {
   extractDomain,
   extractCompany,
   extractVendorFromSubject,
   normalizeCompanyName,
+  isForwarded,
+  stripForwardPrefix,
+  extractForwardedOriginalSender,
 } from "@/lib/scan-company";
+import { bulkCreateInvoices, buildReassociationUpdates } from "@/lib/data/invoices";
+import { reconcileSuppliers } from "@/lib/data/suppliers";
 import { dispatchScan } from "@/lib/worker";
+import { sanitizeScanError } from "@/lib/scan-errors";
 
 // Vercel kills the function (and any `after()` work) at this deadline. The
 // scan flow runs entirely inside after(), so this MUST be at least as long
@@ -23,7 +28,12 @@ import { dispatchScan } from "@/lib/worker";
 // but we leave generous headroom for larger inboxes. Requires Pro tier on
 // Vercel; on Hobby (10s cap) the after() body will be truncated and a
 // scan that takes longer will be left in RUNNING — recoverStuckScans
-// reclaims it after 15 minutes.
+// reclaims it once progress goes stale.
+//
+// The worker dispatch timeout (SCAN_DISPATCH_TIMEOUT_MS in @/lib/worker,
+// 270s) is deliberately BELOW this deadline so a too-slow worker aborts the
+// fetch while this function is still alive — the catch block below then
+// writes FAILED instead of the scan being stranded in RUNNING.
 export const maxDuration = 300; // seconds
 
 export async function GET() {
@@ -114,23 +124,39 @@ export async function POST(req: NextRequest) {
   // recovery sweep lives). Cheap UPDATE, safe to run on every POST.
   await recoverStuckScans(orgId);
 
-  // Duplicate scan prevention: block if a RUNNING scan already exists for this org
+  const DUPLICATE_SCAN_RESPONSE = {
+    error: "A scan is already in progress. Please wait for it to complete or cancel it first.",
+  };
+
+  // Duplicate scan prevention, fast path: block if an active scan already
+  // exists for this org. Racy on its own (two concurrent POSTs can both
+  // pass), so the create below is additionally guarded by the Postgres
+  // partial unique index "one_active_scan_per_org".
   const runningScan = await db.scan.findFirst({
     where: { organizationId: orgId, status: { in: ["PENDING", "RUNNING"] } },
     select: { id: true },
   });
   if (runningScan) {
-    return NextResponse.json(
-      { error: "A scan is already in progress. Please wait for it to complete or cancel it first." },
-      { status: 429 }
-    );
+    return NextResponse.json(DUPLICATE_SCAN_RESPONSE, { status: 429 });
   }
 
-  const scan = await createScan(orgId, connection.id, {
-    keywords,
-    daysBack,
-    unreadOnly,
-  });
+  let scan: Awaited<ReturnType<typeof createScan>>;
+  try {
+    scan = await createScan(orgId, connection.id, {
+      keywords,
+      daysBack,
+      unreadOnly,
+    });
+  } catch (e: unknown) {
+    // Atomic duplicate guard: the partial unique index
+    // one_active_scan_per_org ON scans(organizationId)
+    // WHERE status IN ('PENDING','RUNNING') rejects the loser of a
+    // concurrent-create race with Prisma error P2002.
+    if ((e as { code?: string })?.code === "P2002") {
+      return NextResponse.json(DUPLICATE_SCAN_RESPONSE, { status: 429 });
+    }
+    throw e;
+  }
 
   // Set scan to RUNNING immediately
   await updateScanStatus(orgId, scan.id, {
@@ -138,7 +164,10 @@ export async function POST(req: NextRequest) {
     startedAt: new Date(),
   });
 
-  // Run the heavy dispatch in the background so the POST returns immediately
+  // Run the heavy dispatch in the background so the POST returns immediately.
+  // cancelAbort lets a user cancellation stop the in-flight worker fetch
+  // instead of letting the worker scan to completion against a CANCELLED row.
+  const cancelAbort = new AbortController();
   after(async () => {
     try {
       // Check if scan was cancelled before processing even starts
@@ -156,8 +185,21 @@ export async function POST(req: NextRequest) {
         (() => {
           let lastWrite = 0;
           let lastProgress = -1;
+          let lastCancelCheck = Date.now();
           return async (progress: number, message: string) => {
             const now = Date.now();
+            // Every ~5s, check whether the user cancelled and abort the
+            // dispatch fetch if so. The DELETE handler also pings the
+            // worker's /scan/cancel endpoint; this is the web-side half
+            // that tears down our streaming request.
+            if (now - lastCancelCheck >= 5000 && !cancelAbort.signal.aborted) {
+              lastCancelCheck = now;
+              const cur = await db.scan.findUnique({
+                where: { id: scan.id },
+                select: { status: true },
+              });
+              if (cur?.status === "CANCELLED") cancelAbort.abort();
+            }
             // Throttle progress DB writes — but never silence updates that
             // cross a stage boundary, otherwise a long stage (classify,
             // enrich) leaves the UI frozen on the previous stage's value
@@ -173,15 +215,26 @@ export async function POST(req: NextRequest) {
               await updateScanProgress(scan.id, progress, message);
             }
           };
-        })()
+        })(),
+        cancelAbort.signal
       );
 
       if (result.error) {
+        // Worker-side cancellation acknowledgement (contract: the NDJSON
+        // stream ends with result.error === "cancelled" after
+        // POST /scan/cancel/{id}). The DELETE handler already wrote
+        // CANCELLED — nothing to persist, and definitely not a failure.
+        if (result.error === "cancelled") {
+          console.log(`[Scan ${scan.id}] worker acknowledged cancellation`);
+          return;
+        }
+        const safeMsg = sanitizeScanError(result.error);
+        console.error(`[Scan ${scan.id}] worker result error:`, result.error);
         await updateScanStatus(orgId, scan.id, {
           status: "FAILED",
           progress: 100,
-          progressMessage: result.error,
-          errorMessage: result.error,
+          progressMessage: safeMsg,
+          errorMessage: safeMsg,
           completedAt: new Date(),
         });
         return;
@@ -270,6 +323,23 @@ export async function POST(req: NextRequest) {
 
       const invoiceRows = persistable.map((inv) => {
         const senderDomain = extractDomain(inv.sender);
+        // Forwarded receipts (M11): "Fwd: Your receipt from Anthropic" arrives
+        // FROM the forwarder (e.g. an accountant's Gmail). Prefer the embedded
+        // original sender for attribution; the forwarder is only the
+        // last-resort fallback. The stored sender/senderDomain stay truthful
+        // (the actual From header) — only company attribution is re-pointed.
+        const forwarded = isForwarded(inv.subject);
+        const subjectForVendor = forwarded
+          ? stripForwardPrefix(inv.subject ?? "")
+          : inv.subject;
+        const originalSender = forwarded
+          ? extractForwardedOriginalSender(
+              (inv as any).body_text,
+              inv.body_html
+            )
+          : undefined;
+        const effectiveSender = originalSender ?? inv.sender;
+        const effectiveDomain = extractDomain(effectiveSender) ?? senderDomain;
         // Build a tentative company string from the strongest signal
         // available — PayPal-vendor subject extraction → existing
         // company → fallback to the domain brand. THEN pipe the whole
@@ -278,12 +348,12 @@ export async function POST(req: NextRequest) {
         // place writing `company` so the supplier panel never sees
         // duplicate variants again.
         const rawCompany =
-          extractVendorFromSubject(inv.subject, inv.sender) ||
-          normalizeCompanyName(inv.company || extractCompany(inv.sender) || "") ||
+          extractVendorFromSubject(subjectForVendor, effectiveSender) ||
+          normalizeCompanyName(inv.company || extractCompany(effectiveSender) || "") ||
           undefined;
         const canonicalKey = canonicalSupplierKey({
           company: rawCompany ?? null,
-          senderDomain: senderDomain ?? null,
+          senderDomain: effectiveDomain ?? null,
         });
         const canonicalCompany = canonicalKey
           ? canonicalDisplayName(canonicalKey)
@@ -295,6 +365,11 @@ export async function POST(req: NextRequest) {
           sender: inv.sender ?? "",
           senderDomain,
           company: canonicalCompany,
+          // S1: persist the canonical supplier identity at write time —
+          // canonicalSupplierKey is the ONLY writer of this column. Empty
+          // resolution buckets under "unknown" so exclusion/filtering treats
+          // unattributable rows like any other brand.
+          supplierKey: canonicalKey || UNKNOWN_KEY,
           date: inv.date ? new Date(inv.date) : undefined,
           amount: inv.amount ?? undefined,
           currency: normalizeCurrency(inv.currency ?? "ILS"),
@@ -315,11 +390,22 @@ export async function POST(req: NextRequest) {
         const createResult = await bulkCreateInvoices(orgId, scan.id, invoiceRows);
         console.log(`[Scan ${scan.id}] bulkCreate: ${createResult.count} new, ${invoiceRows.length} total`);
 
+        // Re-check for cancellation right before mutating existing rows.
+        // midCheck ran before bulkCreate; a cancel landing in between must
+        // not re-associate rows or overwrite reportStatus under a CANCELLED
+        // scan. (A sub-second residual race remains and is acceptable — the
+        // terminal-state guards keep the scan itself CANCELLED.)
+        const reassocCheck = await db.scan.findUnique({ where: { id: scan.id }, select: { status: true } });
+        if (reassocCheck?.status === "CANCELLED") return;
+
         // ALWAYS re-associate ALL matching invoices to this scan.
         // createMany with skipDuplicates does NOT update existing rows,
         // so we must explicitly set scanId on duplicates. Split by the
         // per-tier default reportStatus so a re-scan does NOT flip a
-        // previously-excluded "possible" invoice back to INCLUDED.
+        // previously-excluded "possible" invoice back to INCLUDED — and
+        // split again inside buildReassociationUpdates so rows the user
+        // manually included/excluded keep their decision (only scanId is
+        // refreshed on those).
         const includedIds = invoiceRows
           .filter((r) => !r.gmailMessageId.startsWith("unknown-") && r.reportStatus === "INCLUDED")
           .map((r) => r.gmailMessageId);
@@ -334,14 +420,12 @@ export async function POST(req: NextRequest) {
           if (ids.length === 0) continue;
           for (let i = 0; i < ids.length; i += 500) {
             const chunk = ids.slice(i, i + 500);
-            const reassocResult = await db.invoice.updateMany({
-              where: {
-                organizationId: orgId,
-                gmailMessageId: { in: chunk },
-              },
-              data: { scanId: scan.id, reportStatus: status },
-            });
-            console.log(`[Scan ${scan.id}] re-associated chunk ${i}-${i + chunk.length} (${status}): ${reassocResult.count} rows`);
+            let reassociated = 0;
+            for (const op of buildReassociationUpdates(orgId, scan.id, chunk, status)) {
+              const reassocResult = await db.invoice.updateMany(op);
+              reassociated += reassocResult.count;
+            }
+            console.log(`[Scan ${scan.id}] re-associated chunk ${i}-${i + chunk.length} (${status}): ${reassociated} rows`);
           }
         }
 
@@ -451,8 +535,9 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // Backfill company for existing invoices that were scanned before
-        // vendor extraction was improved (e.g., PayPal receipts with Meta/Shopify).
+        // Backfill company + supplierKey for existing invoices that were
+        // scanned before vendor extraction was improved (e.g., PayPal receipts
+        // with Meta/Shopify) or before the supplierKey column existed (S1).
         const companyBackfills = invoiceRows.filter(
           (r) => r.company && !r.gmailMessageId.startsWith("unknown-")
         );
@@ -466,16 +551,20 @@ export async function POST(req: NextRequest) {
                   where: {
                     organizationId: orgId,
                     gmailMessageId: r.gmailMessageId,
-                    company: { not: r.company },
+                    OR: [
+                      { company: { not: r.company } },
+                      { supplierKey: null },
+                      { supplierKey: { not: r.supplierKey } },
+                    ],
                   },
-                  data: { company: r.company },
+                  data: { company: r.company, supplierKey: r.supplierKey },
                 })
               )
             );
             filled += chunkResults.reduce((sum, r) => sum + r.count, 0);
           }
           if (filled > 0) {
-            console.log(`[Scan ${scan.id}] backfilled company for ${filled} existing invoices`);
+            console.log(`[Scan ${scan.id}] backfilled company/supplierKey for ${filled} existing invoices`);
           }
         }
       }
@@ -541,60 +630,54 @@ export async function POST(req: NextRequest) {
         select: { name: true },
       });
       if (excludedSuppliers.length > 0) {
-        // Supplier names in the DB are stored as canonical keys. Match
-        // each invoice's canonical key against the excluded set so toggling
+        // Supplier names in the DB are stored as canonical keys, and every
+        // invoice row now persists the SAME canonical key in supplierKey
+        // (S1), so the sweep is a single indexed updateMany — toggling
         // "Apple" off excludes ALL apple-family invoices ("Apple", "Apple
-        // Services", "iCloud", etc.) — not just rows whose raw company
-        // happened to be the literal string "apple".
-        const excludedKeys = new Set(
-          excludedSuppliers.map((s) => s.name.toLowerCase())
-        );
-        const scanInvs = await db.invoice.findMany({
-          where: { organizationId: orgId, scanId: scan.id },
-          select: { id: true, company: true, senderDomain: true },
+        // Services", "iCloud", etc.). Rows this scan just wrote always carry
+        // supplierKey, so no legacy fallback is needed here.
+        const excludedKeys = excludedSuppliers.map((s) => s.name.toLowerCase());
+        await db.invoice.updateMany({
+          where: {
+            organizationId: orgId,
+            scanId: scan.id,
+            supplierKey: { in: excludedKeys },
+            // A row-level manual include beats the supplier-level
+            // exclusion — the user explicitly promoted that invoice.
+            reportStatusManual: false,
+          },
+          data: { reportStatus: "EXCLUDED" },
         });
-        const idsToExclude = scanInvs
-          .filter((inv) => {
-            const key = canonicalSupplierKey({
-              company: inv.company,
-              senderDomain: inv.senderDomain,
-            });
-            return key && excludedKeys.has(key);
-          })
-          .map((inv) => inv.id);
-        for (let i = 0; i < idsToExclude.length; i += 500) {
-          await db.invoice.updateMany({
-            where: { id: { in: idsToExclude.slice(i, i + 500) } },
-            data: { reportStatus: "EXCLUDED" },
-          });
-        }
+      }
+
+      // Reconcile persisted supplier rows against the current canonical key
+      // set (M13) — mutation-path only, preference-preserving (user
+      // exclusions are re-keyed, never dropped). Best-effort: a failure here
+      // must not fail an already-COMPLETED scan.
+      try {
+        await reconcileSuppliers(orgId);
+      } catch (e: unknown) {
+        console.error(`[Scan ${scan.id}] supplier reconcile failed:`, e instanceof Error ? e.message : e);
       }
 
       // Invalidate cached invoices page so new scan appears in dropdown
       revalidatePath("/invoices");
       revalidatePath("/scans");
     } catch (e: unknown) {
+      // Abort triggered by user cancellation — CANCELLED is already the
+      // persisted terminal state (the terminal guard in updateScanStatus
+      // would reject a FAILED write anyway); don't dress it up as an error.
+      if (cancelAbort.signal.aborted) {
+        console.log(`[Scan ${scan.id}] dispatch aborted after user cancellation`);
+        return;
+      }
       const raw = e instanceof Error ? e.message : "Worker dispatch failed";
       // Log the full error server-side for debugging
       console.error(`[Scan ${scan.id}] dispatch error:`, raw);
 
-      // If the worker reported an AUTH_ERROR, extract it cleanly and tell the
-      // user to reconnect. AUTH_ERROR strings contain scope URLs which the
-      // generic path-stripping regex below would mangle into "[path]".
-      const authMatch = raw.match(/AUTH_ERROR:?\s*([^"}]+)/i);
-      let safeMsg: string;
-      if (authMatch) {
-        safeMsg = (
-          "Gmail authentication failed. " + authMatch[1].trim()
-        ).slice(0, 400);
-      } else {
-        // Sanitize: strip internal paths, connection strings, and stack
-        // traces before persisting — this message is returned to the client.
-        safeMsg = raw
-          .replace(/(?:\/[^\s:]+)+/g, "[path]")           // file paths
-          .replace(/(?:postgres|mysql|redis|mongodb)\S+/gi, "[redacted]") // connection URIs
-          .slice(0, 300);
-      }
+      // Shared sanitizer (also used for worker result.error above): keeps
+      // AUTH_ERROR reconnect guidance intact, strips paths/DSNs otherwise.
+      const safeMsg = sanitizeScanError(raw);
       await updateScanStatus(orgId, scan.id, {
         status: "FAILED",
         progress: 100,

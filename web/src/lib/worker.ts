@@ -5,6 +5,8 @@
  * Default: http://localhost:8000 for local development.
  */
 
+import { extractCompany, normalizeCompanyName } from "@/lib/scan-company";
+
 const WORKER_URL = process.env.WORKER_URL ?? "http://localhost:8000";
 const WORKER_SECRET = process.env.WORKER_SECRET ?? "";
 
@@ -128,6 +130,37 @@ export async function dispatchDiscoveryDebug(
   return res.json();
 }
 
+/**
+ * Scan dispatch timeout. MUST stay below the route's `maxDuration` (300s in
+ * web/src/app/api/scans/route.ts) so the fetch aborts — and the catch block
+ * writes FAILED — while the after() callback is still alive. At 600s the
+ * old timeout could never fire on Vercel: the function was killed at 300s
+ * and the scan was stranded in RUNNING with no error written.
+ * Guarded by web/src/lib/__tests__/scan-timeouts.test.ts.
+ */
+export const SCAN_DISPATCH_TIMEOUT_MS = 270_000;
+
+/**
+ * Best-effort request for the worker to stop an in-flight scan at its next
+ * batch boundary (contract: POST /scan/cancel/{id} → {"status":
+ * "cancel_requested"}). The CANCELLED DB write is the source of truth — if
+ * the worker is unreachable it just finishes a scan whose results the
+ * dispatch loop will discard, so failures are swallowed and returned as
+ * `false` rather than thrown.
+ */
+export async function dispatchScanCancel(scanId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${WORKER_URL}/scan/cancel/${encodeURIComponent(scanId)}`, {
+      method: "POST",
+      headers: workerHeaders(),
+      signal: AbortSignal.timeout(5000),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function dispatchScan(
   scanId: string,
   connection: {
@@ -140,7 +173,11 @@ export async function dispatchScan(
     daysBack: number;
     unreadOnly: boolean;
   },
-  onProgress?: (progress: number, message: string, stage: string) => Promise<void>
+  onProgress?: (progress: number, message: string, stage: string) => Promise<void>,
+  // External abort hook — the scans route aborts this when the user cancels,
+  // so the streaming fetch (and the worker's effort) stops mid-scan instead
+  // of running to completion against a CANCELLED scan.
+  signal?: AbortSignal
 ): Promise<WorkerScanResult> {
   const body: WorkerScanRequest = {
     access_token: connection.accessToken,
@@ -152,11 +189,12 @@ export async function dispatchScan(
     scan_id: scanId,
   };
 
+  const timeoutSignal = AbortSignal.timeout(SCAN_DISPATCH_TIMEOUT_MS);
   const res = await fetch(`${WORKER_URL}/scan`, {
     method: "POST",
     headers: workerHeaders(),
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(600_000), // 10 min timeout for large scans (4+ months back)
+    signal: signal ? AbortSignal.any([timeoutSignal, signal]) : timeoutSignal,
   });
 
   if (!res.ok) {
@@ -325,36 +363,6 @@ async function readNdjsonStream(
   return { file: fileData, fileSize: fileSize ?? 0, fileCached, failures, failedCount: failures?.length };
 }
 
-/** Normalize known company name variants to canonical brand names */
-function normalizeCompany(name: string): string {
-  const lower = name.toLowerCase();
-  if (lower.includes("facebookmail") || lower === "facebook" ||
-      lower === "instagram" ||
-      lower.includes("meta for business") || lower.includes("meta platforms")) {
-    return "Meta";
-  }
-  return name;
-}
-
-/** Compound TLDs that should be stripped as a unit */
-const COMPOUND_TLDS = [
-  "co.il", "co.uk", "co.jp", "co.kr", "co.in", "co.za", "co.nz",
-  "com.au", "com.br", "com.mx", "com.ar", "com.tw", "com.sg",
-  "org.uk", "org.il", "net.il", "ac.il", "ac.uk", "gov.il",
-];
-
-/** Noise subdomains to skip when extracting brand from domain */
-const NOISE_SUBS = new Set([
-  "info", "billing", "invoices", "invoice", "mail", "email", "e-mail",
-  "noreply", "no-reply", "donotreply", "support", "help", "contact",
-  "notifications", "notification", "notify", "alerts", "alert",
-  "accounts", "account", "payments", "payment", "orders", "order",
-  "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
-  "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
-  // Hotel loyalty program suffixes — prevent "Marriott Bonvoy" vs "Marriott" duplicates
-  "bonvoy", "honors",
-]);
-
 /** Normalize a currency symbol or code to ISO 4217. */
 const SYMBOL_TO_ISO: Record<string, string> = { "₪": "ILS", "$": "USD", "€": "EUR", "£": "GBP" };
 function normCurrency(raw: unknown): string {
@@ -362,53 +370,39 @@ function normCurrency(raw: unknown): string {
   return SYMBOL_TO_ISO[s] ?? s;
 }
 
-/** Extract a display-friendly company name from sender for export fallback */
+/** Extract a display-friendly company name from sender for export fallback.
+ *  Delegates to the SAME extraction the scan pipeline uses (scan-company.ts,
+ *  backed by the shared brand-data.json) — this file used to carry a third
+ *  drifted copy of the noise/TLD/Meta-alias logic. */
 function companyFromSender(sender: unknown): string {
   if (!sender || typeof sender !== "string") return "";
-  // Try "Display Name <email>" format
-  const m = sender.match(/^(.+?)\s*</);
-  if (m) {
-    const name = m[1].replace(/^["']|["']$/g, "").trim();
-    if (name && !name.includes("@") && name.length > 1) {
-      // Strip noise words (e.g., "gett reciept" → "gett")
-      const words = name.split(/[\s\-_]+/).filter((w) => w.length > 0);
-      while (words.length > 1 && NOISE_SUBS.has(words[words.length - 1].toLowerCase())) words.pop();
-      while (words.length > 1 && NOISE_SUBS.has(words[0].toLowerCase())) words.shift();
-      const cleaned = words.join(" ");
-      if (cleaned) return normalizeCompany(cleaned);
-    }
-  }
-  // Fall back to domain brand — properly handle compound TLDs
-  const dm = sender.match(/@([^>]+)/);
-  if (dm) {
-    let base = dm[1].toLowerCase().replace(/[^a-z0-9.-]/g, "");
-    let tldStripped = false;
-    for (const tld of COMPOUND_TLDS) {
-      if (base.endsWith("." + tld)) {
-        base = base.slice(0, -(tld.length + 1));
-        tldStripped = true;
-        break;
-      }
-    }
-    if (!tldStripped) {
-      base = base.replace(/\.[a-z]{2,6}$/, "");
-    }
-    const parts = base.split(".").filter((p) => p && !NOISE_SUBS.has(p));
-    const brand = parts.length > 0 ? parts[parts.length - 1] : base;
-    if (brand && brand.length >= 2) {
-      const capitalized = brand.charAt(0).toUpperCase() + brand.slice(1);
-      return normalizeCompany(capitalized);
-    }
-  }
-  return "";
+  const company = extractCompany(sender);
+  return company ? normalizeCompanyName(company) : "";
+}
+
+/** Word export never renders screenshots (that flag was removed end-to-end;
+ *  the worker ignores and warns on it), so a fixed budget is enough. */
+export const WORD_EXPORT_TIMEOUT_MS = 60_000;
+
+/**
+ * Screenshot-ZIP dispatch timeout, sized by invoice count. Worker budget:
+ * default concurrency 3 pages, 45s hard cap per screenshot → worst-case
+ * amortized 15s per invoice, plus a 120s base for browser launch and ZIP
+ * assembly, capped at 15 min. Guarantees the client never aborts before the
+ * worker's own per-screenshot cap can fire.
+ */
+export function screenshotZipTimeoutMs(invoiceCount: number): number {
+  return Math.min(120_000 + invoiceCount * 15_000, 900_000);
 }
 
 export async function dispatchWordExport(
   invoices: Array<Record<string, unknown>>,
   organizationName: string,
-  includeScreenshots = false,
   onProgress?: (progress: number, message: string) => Promise<void>,
   jobId?: string,
+  // True when the user explicitly hand-picked these invoices — the worker's
+  // screenshot-worthiness heuristics defer to an explicit selection.
+  selectionMode = false,
 ): Promise<ExportResult> {
   const mapped = invoices.map((inv) => ({
     id: inv.id ?? "",
@@ -424,10 +418,8 @@ export async function dispatchWordExport(
     has_attachment: inv.hasAttachment ?? false,
     scan_id: inv.scanId ?? "",
     notes: inv.notes ?? "",
-    ...(includeScreenshots && inv.bodyHtml ? { body_html: inv.bodyHtml } : {}),
+    ...(selectionMode ? { explicitly_selected: true } : {}),
   }));
-
-  const timeout = includeScreenshots ? 300_000 : 60_000;
 
   const res = await fetch(`${WORKER_URL}/export/word`, {
     method: "POST",
@@ -436,10 +428,9 @@ export async function dispatchWordExport(
       invoices: mapped,
       organization_name: organizationName,
       format: "word",
-      include_screenshots: includeScreenshots,
       job_id: jobId ?? "",
     }),
-    signal: AbortSignal.timeout(timeout),
+    signal: AbortSignal.timeout(WORD_EXPORT_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -454,6 +445,9 @@ export async function dispatchScreenshotZip(
   invoices: Array<Record<string, unknown>>,
   onProgress?: (progress: number, message: string) => Promise<void>,
   jobId?: string,
+  // True when the user explicitly hand-picked these invoices — the worker's
+  // is_screenshot_worthy() always renders explicitly-selected rows.
+  selectionMode = false,
 ): Promise<ExportResult> {
   const mapped = invoices.map((inv) => ({
     id: inv.id ?? "",
@@ -468,6 +462,7 @@ export async function dispatchScreenshotZip(
     classification_tier: inv.classificationTier ?? "",
     scan_id: inv.scanId ?? "",
     ...(inv.bodyHtml ? { body_html: inv.bodyHtml } : {}),
+    ...(selectionMode ? { explicitly_selected: true } : {}),
   }));
 
   const res = await fetch(`${WORKER_URL}/export/screenshots-zip`, {
@@ -478,7 +473,7 @@ export async function dispatchScreenshotZip(
       include_screenshots: true,
       job_id: jobId ?? "",
     }),
-    signal: AbortSignal.timeout(300_000),
+    signal: AbortSignal.timeout(screenshotZipTimeoutMs(mapped.length)),
   });
 
   if (!res.ok) {

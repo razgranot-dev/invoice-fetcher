@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { nextPollDelay } from "./scan-poll";
 
 interface ScanProgressProps {
   scanId: string;
@@ -24,12 +25,18 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
     progressMessage: "Starting...",
   });
   const [cancelling, setCancelling] = useState(false);
+  // The scan was deleted server-side (404) — stop polling permanently.
+  const [gone, setGone] = useState(false);
+  const failuresRef = useRef(0);
 
-  const poll = useCallback(async () => {
+  const poll = useCallback(async (): Promise<
+    ProgressData | { gone: true } | null
+  > => {
     try {
       const res = await fetch(`/api/scans/${scanId}/progress?t=${Date.now()}`, {
         cache: "no-store",
       });
+      if (res.status === 404) return { gone: true };
       if (!res.ok) return null;
       const json = await res.json();
       setData(json);
@@ -43,9 +50,31 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
     let timer: ReturnType<typeof setTimeout>;
     let mounted = true;
 
+    function schedule(delay: number | null) {
+      if (delay != null) timer = setTimeout(tick, delay);
+    }
+
     async function tick() {
+      if (!mounted) return;
+
+      // Hidden tab: skip the fetch entirely and idle at a slow cadence —
+      // the visibilitychange listener below polls immediately on return.
+      if (typeof document !== "undefined" && document.hidden) {
+        schedule(
+          nextPollDelay({ gone: false, ok: true, failures: failuresRef.current, hidden: true })
+        );
+        return;
+      }
+
       const result = await poll();
       if (!mounted) return;
+
+      if (result && "gone" in result) {
+        // Scan deleted — stop for good and let the server page re-render.
+        setGone(true);
+        router.refresh();
+        return;
+      }
 
       if (
         result?.status === "COMPLETED" ||
@@ -56,16 +85,28 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
         return;
       }
 
-      // Poll every second so progress doesn't visibly freeze when the
-      // worker is mid-phase. The route handler's DB-write throttle is
-      // already 1s, so we're not generating extra DB load.
-      timer = setTimeout(tick, 1000);
+      // Healthy polls run every second (matches the route handler's 1s
+      // DB-write throttle); consecutive failures back off exponentially
+      // so an expired session or network outage doesn't hammer the API.
+      failuresRef.current = result ? 0 : failuresRef.current + 1;
+      schedule(
+        nextPollDelay({ gone: false, ok: result != null, failures: failuresRef.current, hidden: false })
+      );
+    }
+
+    function onVisibilityChange() {
+      if (document.hidden) return;
+      // Back from a hidden tab: cancel the slow idle timer, poll right away.
+      clearTimeout(timer);
+      tick();
     }
 
     tick();
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       mounted = false;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [poll, router]);
 
@@ -90,6 +131,17 @@ export function ScanProgress({ scanId, compact = false }: ScanProgressProps) {
   };
 
   const pct = data.progress;
+
+  // The scan row was deleted server-side (progress endpoint 404s). Polling
+  // has already stopped permanently; show a quiet note until the triggered
+  // router.refresh() re-renders the page without this component.
+  if (gone) {
+    return (
+      <span className="text-xs text-muted-foreground/60">
+        This scan no longer exists.
+      </span>
+    );
+  }
 
   // Surface a FAILED scan instead of silently vanishing. Previously this
   // component returned null for ANY terminal status, so a scan that failed

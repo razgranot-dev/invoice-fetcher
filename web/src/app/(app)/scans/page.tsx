@@ -113,7 +113,7 @@ export default async function ScansPage() {
                         <span>{scan.totalMessages} scanned</span>
                         <span className="text-border">&middot;</span>
                         {included > 0 && (
-                          <span className="text-secondary font-semibold">{included} included</span>
+                          <span className="text-secondary font-semibold">{included} in report</span>
                         )}
                         {excluded > 0 && (
                           <>
