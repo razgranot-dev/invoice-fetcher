@@ -2,29 +2,9 @@ import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { getInvoices } from "@/lib/data/invoices";
 import { db } from "@/lib/db";
-import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
-import { validateInvoiceIds, selectExportableInvoices } from "@/lib/export-selection";
-
-function escapeCsv(value: string): string {
-  // Prevent CSV formula injection: prefix dangerous leading chars with a
-  // single-quote so Excel/Sheets treats the cell as plain text.  The tab
-  // prefix alone is insufficient — some spreadsheet software still evaluates
-  // formulas inside quoted cells when preceded only by whitespace.
-  const DANGEROUS_PREFIXES = ["=", "+", "-", "@", "\t", "\r"];
-  let safe = value;
-  if (safe.length > 0 && DANGEROUS_PREFIXES.includes(safe[0])) {
-    safe = "'" + safe;
-  }
-  if (
-    safe.includes(",") ||
-    safe.includes('"') ||
-    safe.includes("\n") ||
-    safe.includes("\r")
-  ) {
-    return `"${safe.replace(/"/g, '""')}"`;
-  }
-  return safe;
-}
+import { canonicalSupplierKey, UNKNOWN_KEY } from "@/lib/supplier-canonical";
+import { validateInvoiceIds, selectExportableInvoices, VALID_TIERS } from "@/lib/export-selection";
+import { buildCsvContent } from "@/lib/csv";
 
 function field(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -32,56 +12,29 @@ function field(value: unknown): string {
   return String(value);
 }
 
-export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return new Response("Unauthorized", { status: 401 });
-  }
+interface CsvFilters {
+  search?: string;
+  tier?: string;
+  company?: string;
+  scanId?: string;
+  reportStatus?: string;
+}
 
-  const orgId = (session as any).organizationId as string | undefined;
-  if (!orgId) {
-    return new Response("No organization", { status: 403 });
-  }
-
-  const { searchParams } = req.nextUrl;
-
-  // Validate and sanitize query parameters
-  const rawSearch = searchParams.get("search") || undefined;
-  const rawTier = searchParams.get("tier") || undefined;
-  const rawCompany = searchParams.get("company") || undefined;
-  const rawScanId = searchParams.get("scanId") || undefined;
-  const rawReportStatus = searchParams.get("reportStatus") || "INCLUDED";
-
-  const search = rawSearch && rawSearch.length <= 500 ? rawSearch : undefined;
-  const company = rawCompany && rawCompany.length <= 500 ? rawCompany : undefined;
-
-  // Validate tier enum
-  const VALID_TIERS = new Set(["confirmed_invoice", "likely_invoice", "possible_invoice", "not_invoice"]);
-  const tier = rawTier && VALID_TIERS.has(rawTier) ? rawTier : undefined;
-
-  // Validate scanId format (cuid)
-  const scanId = rawScanId && /^c[a-z0-9]{20,}$/i.test(rawScanId) && rawScanId.length <= 100
-    ? rawScanId : undefined;
-
-  // Validate reportStatus enum
-  const reportStatus = rawReportStatus === "INCLUDED" || rawReportStatus === "EXCLUDED"
-    ? rawReportStatus : "INCLUDED";
-
-  // Selection-mode: when the client passes ?ids=a,b,c those checked rows ARE
-  // the export — same contract as Word/ZIP. Filters/supplier-exclusion are
-  // bypassed so CSV behaves identically to every other export action.
-  const rawIds = searchParams.get("ids");
-  const idsArray = rawIds ? rawIds.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
-  const idsValidation = validateInvoiceIds(idsArray);
-  if (!idsValidation.valid) {
-    return new Response(idsValidation.error, { status: 400 });
-  }
-  const invoiceIds = idsValidation.invoiceIds;
+/**
+ * Shared CSV generator for both handlers. Selection-mode (`invoiceIds`
+ * defined) exports EXACTLY the checked rows — same contract as Word/ZIP;
+ * filter-mode mirrors the current view (minus excluded suppliers).
+ */
+async function generateCsvResponse(
+  orgId: string,
+  opts: { invoiceIds?: string[]; filters?: CsvFilters }
+): Promise<Response> {
+  const { invoiceIds, filters = {} } = opts;
   const useExplicitSelection = invoiceIds !== undefined;
 
   const rawInvoices = useExplicitSelection
     ? await getInvoices(orgId, { invoiceIds }, 10000)
-    : await getInvoices(orgId, { search, tier, company, scanId, reportStatus }, 10000);
+    : await getInvoices(orgId, filters, 10000);
 
   // Excluded suppliers only apply in filter-mode; selectExportableInvoices
   // short-circuits the brand check when an explicit selection is in play.
@@ -103,9 +56,17 @@ export async function GET(req: NextRequest) {
     format: "ZIP_SCREENSHOTS",
     invoiceIds,
     excludedBrands,
+    // Same supplier identity as the invoices page: persisted supplierKey
+    // first (S1), canonical resolver fallback for legacy rows, "unknown"
+    // bucket for unattributable rows (M12) — see api/exports/route.ts.
+    // Keeps "what you see is what you export".
     brandResolver: (inv) =>
-      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
-      (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null),
+      inv.supplierKey ||
+      canonicalSupplierKey({
+        company: inv.company,
+        senderDomain: inv.senderDomain,
+      }) ||
+      UNKNOWN_KEY,
   });
 
   console.log(
@@ -139,13 +100,9 @@ export async function GET(req: NextRequest) {
     inv.scanId,
   ]);
 
-  // UTF-8 BOM for Excel compatibility
-  const csv =
-    "\uFEFF" +
-    [
-      headers.map(escapeCsv).join(","),
-      ...rows.map((row) => row.map(escapeCsv).join(",")),
-    ].join("\r\n");
+  // buildCsvContent applies the formula-injection guard per field, prepends
+  // the UTF-8 BOM for Excel, and joins with CRLF (see web/src/lib/csv.ts).
+  const csv = buildCsvContent(headers, rows);
 
   const date = new Date().toISOString().split("T")[0];
 
@@ -155,4 +112,101 @@ export async function GET(req: NextRequest) {
       "Content-Disposition": `attachment; filename="invoices-${date}.csv"`,
     },
   });
+}
+
+export async function GET(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const orgId = (session as any).organizationId as string | undefined;
+  if (!orgId) {
+    return new Response("No organization", { status: 403 });
+  }
+
+  const { searchParams } = req.nextUrl;
+
+  // Validate and sanitize query parameters
+  const rawSearch = searchParams.get("search") || undefined;
+  const rawTier = searchParams.get("tier") || undefined;
+  const rawCompany = searchParams.get("company") || undefined;
+  const rawScanId = searchParams.get("scanId") || undefined;
+  const rawReportStatus = searchParams.get("reportStatus") || "INCLUDED";
+
+  const search = rawSearch && rawSearch.length <= 500 ? rawSearch : undefined;
+  const company = rawCompany && rawCompany.length <= 500 ? rawCompany : undefined;
+
+  // Validate tier enum. Reject rather than drop: silently ignoring an
+  // unknown tier would export a WIDER set than the view the user is looking
+  // at — the exact failure mode the selection contract exists to prevent.
+  if (rawTier && !VALID_TIERS.has(rawTier)) {
+    return new Response("Invalid tier value", { status: 400 });
+  }
+  const tier = rawTier;
+
+  // Validate scanId format (cuid)
+  const scanId = rawScanId && /^c[a-z0-9]{20,}$/i.test(rawScanId) && rawScanId.length <= 100
+    ? rawScanId : undefined;
+
+  // Validate reportStatus enum
+  const reportStatus = rawReportStatus === "INCLUDED" || rawReportStatus === "EXCLUDED"
+    ? rawReportStatus : "INCLUDED";
+
+  // Legacy selection-mode via ?ids= is kept for small selections /
+  // backward-compat, but the UI now POSTs selections (H9): a select-all of
+  // hundreds of CUIDs blows past Node's 16KB header limit as a query string.
+  const rawIds = searchParams.get("ids");
+  const idsArray = rawIds ? rawIds.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+  const idsValidation = validateInvoiceIds(idsArray);
+  if (!idsValidation.valid) {
+    return new Response(idsValidation.error, { status: 400 });
+  }
+
+  return generateCsvResponse(orgId, {
+    invoiceIds: idsValidation.invoiceIds,
+    filters: { search, tier, company, scanId, reportStatus },
+  });
+}
+
+/**
+ * Selection-mode CSV export (H9). The checked ids ride in the JSON body so
+ * arbitrarily large selections never hit URL/header size limits. Filter-mode
+ * stays on GET so plain link downloads keep working.
+ */
+export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const orgId = (session as any).organizationId as string | undefined;
+  if (!orgId) {
+    return new Response("No organization", { status: 403 });
+  }
+
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return new Response("Invalid JSON body", { status: 400 });
+  }
+
+  const rawIds =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>).ids
+      : undefined;
+
+  const idsValidation = validateInvoiceIds(rawIds);
+  if (!idsValidation.valid) {
+    return new Response(idsValidation.error, { status: 400 });
+  }
+  if (idsValidation.invoiceIds === undefined) {
+    return new Response(
+      "ids is required — POST is selection-mode only; use GET for filter exports",
+      { status: 400 }
+    );
+  }
+
+  return generateCsvResponse(orgId, { invoiceIds: idsValidation.invoiceIds });
 }

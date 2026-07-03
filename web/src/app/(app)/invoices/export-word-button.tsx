@@ -5,7 +5,11 @@ import { useRouter } from "next/navigation";
 import { FileText, Loader2, CheckCircle2, Images, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useInvoiceSelection } from "./selection-context";
-import { buildExportPayload } from "@/lib/export-payload";
+import {
+  buildExportPayload,
+  exportStartMessage,
+  nextPollDelay,
+} from "@/lib/export-payload";
 
 interface ExportWordButtonProps {
   filters: { search?: string; tier?: string; company?: string; scanId?: string; reportStatus?: string };
@@ -20,6 +24,9 @@ interface ActiveExport {
   progress: number;
   message: string;
   status: "starting" | "processing" | "done" | "failed";
+  /** S6: server-reported note that part of the selection no longer exists.
+   *  Kept separate from `message` so progress updates never overwrite it. */
+  warning?: string;
 }
 
 export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
@@ -27,7 +34,6 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
   const { selectedIds, clear: clearSelection } = useInvoiceSelection();
   const [activeExports, setActiveExports] = useState<ActiveExport[]>([]);
   const [checked, setChecked] = useState<Set<ExportFormat>>(new Set());
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const queueRef = useRef<ExportFormat[]>([]);
   const runningRef = useRef(false);
 
@@ -44,7 +50,13 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
 
   const startExport = useCallback(async (format: ExportFormat) => {
     runningRef.current = true;
-    const label = format === "WORD" ? "Starting Word export..." : "Starting screenshot package...";
+    // S6: seed the card with the same "Exporting N selected invoices..."
+    // vocabulary the worker uses, so the message reads consistently before
+    // the first server progress line arrives.
+    const label = exportStartMessage(
+      format,
+      selectionSnapshotRef.current?.length ?? 0
+    );
 
     setActiveExports((prev) => [
       ...prev.filter((e) => e.format !== format || e.status === "done" || e.status === "failed"),
@@ -59,7 +71,6 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
         format,
         filters,
         selectedIds: selectionSnapshotRef.current,
-        includeScreenshots: false,
       });
 
       const res = await fetch("/api/exports", {
@@ -85,7 +96,16 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
       setActiveExports((prev) =>
         prev.map((e) =>
           e.format === format && e.status === "starting"
-            ? { ...e, exportId: data.export.id, status: "processing" }
+            ? {
+                ...e,
+                exportId: data.export.id,
+                status: "processing",
+                // S6: surface "N selected invoices no longer exist" — kept on
+                // its own field so progress polling can't overwrite it.
+                ...(typeof data.warning === "string" && data.warning
+                  ? { warning: data.warning }
+                  : {}),
+              }
             : e
         )
       );
@@ -101,57 +121,97 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
     runningRef.current = false;
   }, [filters]);
 
-  // Poll for progress on the currently processing export
-  useEffect(() => {
-    const polling = activeExports.find(
+  // The export currently being polled. Deriving the ID (rather than keying
+  // the effect on the whole activeExports array) stops the old
+  // teardown/recreate churn on every progress update (S8).
+  const pollingId =
+    activeExports.find(
       (e) => e.exportId && (e.status === "processing" || e.status === "starting")
-    );
-    if (!polling?.exportId) return;
+    )?.exportId ?? null;
 
-    intervalRef.current = setInterval(async () => {
+  // Poll for progress (S8): self-scheduling timeout with backoff on unchanged
+  // polls (800ms base, ×1.5, 10s cap, reset on any change), paused while the
+  // tab is hidden (immediate refresh on return), stopped on terminal status.
+  useEffect(() => {
+    if (!pollingId) return;
+    const BASE_DELAY = 800;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let delay = BASE_DELAY;
+    let lastSnapshot = "";
+
+    const tick = async () => {
+      if (cancelled) return;
+      if (document.visibilityState === "hidden") {
+        // Don't hit the network while hidden; visibilitychange resumes us.
+        timer = setTimeout(tick, delay);
+        return;
+      }
+      let terminal = false;
+      let changed = false;
       try {
-        const res = await fetch(`/api/exports/${polling.exportId}?t=${Date.now()}`, {
+        const res = await fetch(`/api/exports/${pollingId}?t=${Date.now()}`, {
           cache: "no-store",
         });
-        if (!res.ok) return;
-        const data = await res.json();
-        const exp = data.export;
-        if (!exp) return;
+        if (res.ok) {
+          const data = await res.json();
+          const exp = data.export;
+          if (exp) {
+            const snapshot = `${exp.status}|${exp.progress}|${exp.progressMessage ?? ""}`;
+            changed = snapshot !== lastSnapshot;
+            lastSnapshot = snapshot;
+            terminal =
+              exp.status === "COMPLETED" ||
+              exp.status === "FAILED" ||
+              exp.status === "CANCELLED";
 
-        setActiveExports((prev) =>
-          prev.map((e) => {
-            if (e.exportId !== polling.exportId) return e;
-            const updated = { ...e, progress: exp.progress ?? e.progress };
-            if (exp.progressMessage) updated.message = exp.progressMessage;
+            setActiveExports((prev) =>
+              prev.map((e) => {
+                if (e.exportId !== pollingId) return e;
+                const updated = { ...e, progress: exp.progress ?? e.progress };
+                if (exp.progressMessage) updated.message = exp.progressMessage;
 
-            if (exp.status === "COMPLETED") {
-              updated.status = "done";
-              updated.progress = 100;
-              const serverMsg = exp.progressMessage ?? "";
-              updated.message = serverMsg !== "Complete" && serverMsg ? serverMsg : "Export ready!";
-            } else if (exp.status === "FAILED") {
-              updated.status = "failed";
-              updated.message = exp.errorMessage ?? "Export failed";
-            } else if (exp.status === "CANCELLED") {
-              updated.status = "failed";
-              updated.message = "Export was cancelled";
-            }
-            return updated;
-          })
-        );
-
-        if (exp.status === "COMPLETED" || exp.status === "FAILED" || exp.status === "CANCELLED") {
-          if (intervalRef.current) clearInterval(intervalRef.current);
+                if (exp.status === "COMPLETED") {
+                  updated.status = "done";
+                  updated.progress = 100;
+                  const serverMsg = exp.progressMessage ?? "";
+                  updated.message = serverMsg !== "Complete" && serverMsg ? serverMsg : "Export ready!";
+                } else if (exp.status === "FAILED") {
+                  updated.status = "failed";
+                  updated.message = exp.errorMessage ?? "Export failed";
+                } else if (exp.status === "CANCELLED") {
+                  updated.status = "failed";
+                  updated.message = "Export was cancelled";
+                }
+                return updated;
+              })
+            );
+          }
         }
       } catch {
-        // Ignore polling errors
+        // Ignore polling errors — the next tick retries with backoff.
       }
-    }, 800);
-
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (cancelled || terminal) return;
+      delay = nextPollDelay(delay, BASE_DELAY, changed);
+      timer = setTimeout(tick, delay);
     };
-  }, [activeExports]);
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && !cancelled) {
+        if (timer) clearTimeout(timer);
+        delay = BASE_DELAY;
+        timer = setTimeout(tick, 0);
+      }
+    };
+
+    timer = setTimeout(tick, BASE_DELAY);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [pollingId]);
 
   // Process queue: when current export finishes, start the next one
   useEffect(() => {
@@ -257,6 +317,11 @@ export function ExportWordButton({ filters, disabled }: ExportWordButtonProps) {
                   {exp.progress}%
                 </span>
               </div>
+              {exp.warning && (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                  {exp.warning}
+                </p>
+              )}
               <div className="mt-1 h-1.5 w-full rounded-full bg-muted overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${

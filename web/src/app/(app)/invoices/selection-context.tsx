@@ -4,10 +4,12 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
+import { pruneSelection } from "@/lib/export-selection";
 
 interface SelectionContextValue {
   selected: Set<string>;
@@ -20,8 +22,26 @@ interface SelectionContextValue {
 
 const SelectionContext = createContext<SelectionContextValue | null>(null);
 
-export function InvoiceSelectionProvider({ children }: { children: ReactNode }) {
+export function InvoiceSelectionProvider({
+  children,
+  visibleIds,
+}: {
+  children: ReactNode;
+  /** IDs currently visible on the page. When provided, the selection is
+   *  pruned to this set on every change — including the empty list, which
+   *  InvoiceList never sees because it unmounts (M17): without pruning HERE,
+   *  a filter change that empties the view would leave invisible rows
+   *  exportable via the header buttons. */
+  visibleIds?: string[];
+}) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!visibleIds) return;
+    // pruneSelection returns the SAME Set reference when nothing changed, so
+    // this setter bails out without a re-render (no update loops).
+    setSelected((prev) => pruneSelection(prev, visibleIds));
+  }, [visibleIds]);
 
   const toggle = useCallback((id: string) => {
     setSelected((prev) => {

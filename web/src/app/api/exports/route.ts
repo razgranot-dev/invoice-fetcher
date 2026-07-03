@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { auth } from "@/lib/auth";
 import { getInvoices } from "@/lib/data/invoices";
-import { createExport, getExports, updateExportStatus, updateExportProgress } from "@/lib/data/exports";
+import { createExport, getExports, updateExportStatus, updateExportProgress, recoverStuckExports } from "@/lib/data/exports";
+import { missingSelectionWarning } from "@/lib/export-payload";
 import { dispatchWordExport, dispatchScreenshotZip } from "@/lib/worker";
 import { db } from "@/lib/db";
-import { normalizeDomain, cleanCompanyName } from "@/lib/utils";
+import { canonicalSupplierKey, UNKNOWN_KEY } from "@/lib/supplier-canonical";
 import {
   selectExportableInvoices,
   validateInvoiceIds,
+  VALID_TIERS,
   type ExportFormat,
 } from "@/lib/export-selection";
 
@@ -47,9 +49,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  // NOTE (H11): the legacy `body.includeScreenshots` flag is intentionally
+  // ignored — screenshots ship only via the dedicated ZIP_SCREENSHOTS format.
   const format = body.format as string;
   const rawFilters = (body.filters && typeof body.filters === "object" && !Array.isArray(body.filters)) ? body.filters : {};
-  const includeScreenshots = body.includeScreenshots === true;
   const rawInvoiceIds = body.invoiceIds;
 
   if (format !== "WORD" && format !== "ZIP_SCREENSHOTS") {
@@ -85,7 +88,6 @@ export async function POST(req: NextRequest) {
   }
 
   // Validate tier enum if provided
-  const VALID_TIERS = new Set(["confirmed_invoice", "likely_invoice", "possible_invoice", "not_invoice"]);
   if (filters.tier && !VALID_TIERS.has(filters.tier)) {
     return NextResponse.json({ error: "Invalid tier value" }, { status: 400 });
   }
@@ -94,6 +96,11 @@ export async function POST(req: NextRequest) {
   if (filters.reportStatus && filters.reportStatus !== "INCLUDED" && filters.reportStatus !== "EXCLUDED") {
     return NextResponse.json({ error: "Invalid reportStatus value" }, { status: 400 });
   }
+
+  // Stuck-export recovery (M20): fail out orphaned PENDING/PROCESSING rows
+  // older than the threshold BEFORE the duplicate/cap guards below, so a row
+  // orphaned by a process restart can never 429 this org forever.
+  await recoverStuckExports(orgId);
 
   // Duplicate export prevention: block if an export of the same format is already in progress
   const runningExport = await db.export.findFirst({
@@ -160,9 +167,19 @@ export async function POST(req: NextRequest) {
     format: format as ExportFormat,
     invoiceIds,
     excludedBrands,
+    // Brand identity: the persisted Invoice.supplierKey (written exclusively
+    // by canonicalSupplierKey at scan time — S1), with the same resolver as
+    // an in-memory fallback for not-yet-backfilled rows. Identical to the
+    // invoices page and the scan-finalization sweep, so excluded suppliers
+    // hidden on the page can never leak into the exported report — and
+    // excluding the "unknown" chip drops unattributable rows here too (M12).
     brandResolver: (inv) =>
-      cleanCompanyName(inv.company?.trim().toLowerCase() ?? "") ||
-      (inv.senderDomain ? normalizeDomain(inv.senderDomain) : null),
+      inv.supplierKey ||
+      canonicalSupplierKey({
+        company: inv.company,
+        senderDomain: inv.senderDomain,
+      }) ||
+      UNKNOWN_KEY,
   });
 
   // ── Selection-contract observability + invariant guard ──────────────────
@@ -228,19 +245,23 @@ export async function POST(req: NextRequest) {
 
       let result: Awaited<ReturnType<typeof dispatchWordExport>>;
 
+      // selectionMode (M22): when the user hand-picked rows, the worker must
+      // treat every row as screenshot-worthy — even not_invoice tiers — so an
+      // explicit selection is never silently thinned by heuristics.
       if (format === "ZIP_SCREENSHOTS") {
         result = await dispatchScreenshotZip(
           exportable as unknown as Array<Record<string, unknown>>,
           progressCb,
           exp.id,
+          useExplicitSelection,
         );
       } else {
         result = await dispatchWordExport(
           exportable as unknown as Array<Record<string, unknown>>,
           org?.name ?? "Organization",
-          includeScreenshots,
           progressCb,
           exp.id,
+          useExplicitSelection,
         );
       }
 
@@ -287,8 +308,18 @@ export async function POST(req: NextRequest) {
     }
   });
 
+  // S6: when some explicitly-selected ids no longer exist (deleted between
+  // selecting and exporting), tell the client instead of burying the count
+  // divergence in server logs.
+  const warning = useExplicitSelection
+    ? missingSelectionWarning(selectedIdsCount, exportedInvoicesCount)
+    : undefined;
+
   return NextResponse.json(
-    { export: { id: exp.id, status: "PENDING", format } },
+    {
+      export: { id: exp.id, status: "PENDING", format },
+      ...(warning ? { warning } : {}),
+    },
     { status: 201 }
   );
 }

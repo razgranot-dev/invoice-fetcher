@@ -59,16 +59,10 @@ export function InvoiceList({ invoices }: InvoiceListProps) {
   );
 
   // Reset transient state when the underlying list changes (filters/scan
-  // switch). Drop stale selected IDs that no longer exist in the new view
-  // so the export payload never contains ghosts from a previous filter.
+  // switch). Selection pruning lives in InvoiceSelectionProvider (M17) —
+  // it must run even when this component unmounts on an emptied view.
   useEffect(() => {
     setStatuses(Object.fromEntries(invoices.map((inv) => [inv.id, inv.reportStatus])));
-    const visible = new Set(invoices.map((inv) => inv.id));
-    const pruned = selectedIds.filter((id) => visible.has(id));
-    if (pruned.length !== selectedIds.length) {
-      setAll(pruned);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [invoices]);
 
   const allIds = invoices.map((i) => i.id);

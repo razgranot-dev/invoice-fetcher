@@ -24,6 +24,25 @@
 /** Match the CUID format Prisma generates for Invoice.id. */
 const INVOICE_ID_RE = /^c[a-z0-9]{20,}$/i;
 
+/**
+ * The four classification tiers the worker actually produces
+ * (core/invoice_classifier.py) and the filter UI sends. Single source of
+ * truth for API-boundary validation — every route MUST validate `tier`
+ * against this set instead of hand-rolling its own list. A stale copy once
+ * contained the nonexistent value "possible_invoice", which made the
+ * "Possible" filter 400 on Word exports and silently widen CSV exports.
+ */
+export const CLASSIFICATION_TIERS = [
+  "confirmed_invoice",
+  "likely_invoice",
+  "possible_financial_email",
+  "not_invoice",
+] as const;
+
+export type ClassificationTier = (typeof CLASSIFICATION_TIERS)[number];
+
+export const VALID_TIERS: ReadonlySet<string> = new Set(CLASSIFICATION_TIERS);
+
 export interface SelectionValidationOk {
   valid: true;
   /** undefined ⇒ no selection sent. empty array ⇒ caller sent []
@@ -65,6 +84,57 @@ export function validateInvoiceIds(
     return { valid: true, invoiceIds: undefined };
   }
   return { valid: true, invoiceIds: Array.from(new Set(raw as string[])) };
+}
+
+/**
+ * Prune a checkbox selection down to the ids still visible after a filter
+ * change (M17). Returns the SAME Set reference when nothing needs pruning so
+ * React state setters can bail out without re-rendering. An empty
+ * `visibleIds` clears the selection — an emptied view must never keep
+ * invisible rows exportable.
+ */
+export function pruneSelection(
+  selected: Set<string>,
+  visibleIds: readonly string[]
+): Set<string> {
+  if (selected.size === 0) return selected;
+  const visible = new Set(visibleIds);
+  let needsPrune = false;
+  for (const id of selected) {
+    if (!visible.has(id)) {
+      needsPrune = true;
+      break;
+    }
+  }
+  if (!needsPrune) return selected;
+  const next = new Set<string>();
+  for (const id of selected) {
+    if (visible.has(id)) next.add(id);
+  }
+  return next;
+}
+
+/**
+ * Stuck-export recovery window (M20). Covers BOTH lifecycle states: a row is
+ * created PENDING and only flips to PROCESSING inside the after() callback —
+ * if the process dies in between, the orphaned PENDING row would otherwise
+ * block every future export of that format with a 429, forever.
+ */
+export const STUCK_EXPORT_THRESHOLD_MS = 15 * 60 * 1000;
+
+export function stuckExportWhere(
+  organizationId: string,
+  now: Date
+): {
+  organizationId: string;
+  status: { in: ("PENDING" | "PROCESSING")[] };
+  createdAt: { lt: Date };
+} {
+  return {
+    organizationId,
+    status: { in: ["PENDING", "PROCESSING"] },
+    createdAt: { lt: new Date(now.getTime() - STUCK_EXPORT_THRESHOLD_MS) },
+  };
 }
 
 export type ExportFormat = "WORD" | "ZIP_SCREENSHOTS";

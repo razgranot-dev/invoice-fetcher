@@ -24,6 +24,11 @@ import { describe, test, expect } from "vitest";
 import {
   selectExportableInvoices,
   validateInvoiceIds,
+  pruneSelection,
+  stuckExportWhere,
+  STUCK_EXPORT_THRESHOLD_MS,
+  CLASSIFICATION_TIERS,
+  VALID_TIERS,
   type InvoiceForExport,
 } from "../export-selection";
 
@@ -312,5 +317,71 @@ describe("selection-mode end-to-end semantics", () => {
     });
 
     expect(result.map((i) => i.id).sort()).toEqual(userPicked.sort());
+  });
+});
+
+describe("pruneSelection — selection follows the visible list (M17)", () => {
+  test("drops selected ids that are no longer visible", () => {
+    const pruned = pruneSelection(new Set(["c_a", "c_b", "c_gone"]), ["c_a", "c_b", "c_other"]);
+    expect(Array.from(pruned).sort()).toEqual(["c_a", "c_b"]);
+  });
+
+  test("an EMPTIED view clears the selection — invisible rows must not stay exportable", () => {
+    // The M17 hole: InvoiceList unmounts when the view empties, so pruning
+    // must happen in the always-mounted provider. An empty visibleIds array
+    // must clear everything.
+    const pruned = pruneSelection(new Set(["c_a", "c_b"]), []);
+    expect(pruned.size).toBe(0);
+  });
+
+  test("returns the SAME Set reference when nothing needs pruning (no render loops)", () => {
+    const selected = new Set(["c_a", "c_b"]);
+    expect(pruneSelection(selected, ["c_a", "c_b", "c_c"])).toBe(selected);
+  });
+
+  test("empty selection short-circuits to the same reference", () => {
+    const empty = new Set<string>();
+    expect(pruneSelection(empty, [])).toBe(empty);
+    expect(pruneSelection(empty, ["c_a"])).toBe(empty);
+  });
+});
+
+describe("stuckExportWhere — orphaned-export recovery window (M20)", () => {
+  test("covers BOTH lifecycle states, including pre-processing PENDING orphans", () => {
+    // A row is created PENDING and only flips to PROCESSING inside the
+    // after() callback. A process restart in between orphans it — and the
+    // duplicate-export guard would then 429 that format forever.
+    const now = new Date("2026-07-01T12:00:00Z");
+    const where = stuckExportWhere("org_1", now);
+    expect(where.organizationId).toBe("org_1");
+    expect(where.status.in.sort()).toEqual(["PENDING", "PROCESSING"]);
+    expect(where.createdAt.lt.getTime()).toBe(
+      now.getTime() - STUCK_EXPORT_THRESHOLD_MS
+    );
+  });
+
+  test("threshold is 15 minutes", () => {
+    expect(STUCK_EXPORT_THRESHOLD_MS).toBe(15 * 60 * 1000);
+  });
+});
+
+describe("CLASSIFICATION_TIERS — the shared tier enum", () => {
+  test("contains exactly the tiers the worker produces (core/invoice_classifier.py)", () => {
+    expect(new Set(CLASSIFICATION_TIERS)).toEqual(
+      new Set([
+        "confirmed_invoice",
+        "likely_invoice",
+        "possible_financial_email",
+        "not_invoice",
+      ])
+    );
+  });
+
+  test("accepts the UI's 'Possible' value and rejects the stale copy-paste value", () => {
+    // Regression: three routes once validated against a hand-rolled set
+    // containing "possible_invoice" (which nothing produces), so filtering by
+    // "Possible" 400'd Word exports and silently widened CSV exports.
+    expect(VALID_TIERS.has("possible_financial_email")).toBe(true);
+    expect(VALID_TIERS.has("possible_invoice")).toBe(false);
   });
 });

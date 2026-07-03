@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { stuckExportWhere } from "@/lib/export-selection";
 
 export async function getExports(organizationId: string) {
   return db.export.findMany({
@@ -106,21 +107,20 @@ export async function updateExportProgress(
 }
 
 /**
- * Recover exports stuck in PROCESSING for more than 15 minutes.
- * Called opportunistically from the exports list page.
+ * Recover exports stuck in PENDING or PROCESSING for more than 15 minutes.
+ * PENDING is covered too (M20): a row is created PENDING and only becomes
+ * PROCESSING inside the POST handler's after() callback — a process restart
+ * in between orphans it, and the duplicate-export guard would then 429 every
+ * future export of that format. Called from the exports list page AND from
+ * POST /api/exports so a blocked user is unblocked on their next attempt.
  */
 export async function recoverStuckExports(organizationId: string) {
-  const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
   return db.export.updateMany({
-    where: {
-      organizationId,
-      status: "PROCESSING",
-      createdAt: { lt: fifteenMinAgo },
-    },
+    where: stuckExportWhere(organizationId, new Date()),
     data: {
       status: "FAILED",
       progress: 100,
-      progressMessage: "Timed out — export did not complete",
+      progressMessage: "Timed out — export never started or did not complete",
       errorMessage: "Export timed out after 15 minutes",
       completedAt: new Date(),
     },
