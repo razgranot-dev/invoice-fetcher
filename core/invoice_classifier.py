@@ -789,13 +789,25 @@ def _body_has_billing_detail(body_html: str, body_text: str) -> bool:
     return hits >= 2
 
 
-def is_screenshot_worthy(invoice: dict[str, Any]) -> tuple[bool, str]:
+def is_screenshot_worthy(
+    invoice: dict[str, Any],
+    explicitly_selected: bool = False,
+) -> tuple[bool, str]:
     """Determine if an invoice merits a screenshot for export.
 
     Confirmed and likely invoices ALWAYS get a screenshot — the classifier
     already validated they represent real transactions, so body-length
     or billing-detail checks should not block them.
+
+    Explicit selection is the source of truth: when the user checkbox-selected
+    an invoice for export (signalled by the ``explicitly_selected`` param or an
+    ``explicitly_selected`` flag on the invoice dict), the tier gate must not
+    silently drop it — even a not_invoice row gets a screenshot. Filter-mode
+    exports never carry the flag, so their behavior is unchanged.
     """
+    if explicitly_selected or invoice.get("explicitly_selected"):
+        return True, ""
+
     tier = invoice.get("classification_tier", "")
 
     if not tier:

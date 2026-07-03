@@ -191,6 +191,47 @@ class TestPreviouslyMissedPatterns:
         assert " OR " in q
 
 
+class TestKeywordSanitization:
+    """M5 regression — Gmail query metacharacters in user keywords.
+
+    A stray `"` inside a keyword used to terminate the quoted phrase early;
+    a following `)`/`}` then closed the OR group prematurely, producing a
+    malformed query that Gmail answered with empty results (or a 400) — the
+    scan reported 'no messages found'. build_query now strips the
+    metacharacters (`"` `(` `)` `{` `}` `\\`) and collapses whitespace, since
+    Gmail has no escape syntax inside quoted phrases.
+    """
+
+    def test_quote_and_paren_keyword_keeps_query_balanced(self, connector):
+        q = connector.build_query(['inv"oice)', "receipt"], days_back=30, unread_only=False)
+        assert q.count('"') % 2 == 0, "unbalanced quotes break the quoted phrase"
+        assert q.count("(") == q.count(")"), "unbalanced parens break the OR group"
+        # Metachars replaced by spaces, whitespace collapsed, phrase intact
+        assert 'subject:"inv oice"' in q
+        assert 'subject:"receipt"' in q
+
+    def test_curly_braces_and_backslash_stripped(self, connector):
+        q = connector.build_query(["{invoice}", "re\\ceipt"], days_back=30, unread_only=False)
+        assert "{" not in q and "}" not in q
+        assert "\\" not in q
+        assert 'subject:"invoice"' in q
+        assert 'subject:"re ceipt"' in q
+
+    def test_metachar_only_keyword_dropped(self, connector):
+        q = connector.build_query(['"()'], days_back=30, unread_only=False)
+        assert 'subject:""' not in q
+        assert '""' not in q
+
+    def test_dedup_applies_after_sanitization(self, connector):
+        """'foo"' sanitizes to 'foo' — it must dedupe with a plain 'foo'."""
+        q = connector.build_query(['foo"', "foo"], days_back=30, unread_only=False)
+        assert q.count('subject:"foo"') == 1
+
+    def test_multi_word_phrase_survives_whitespace_collapse(self, connector):
+        q = connector.build_query(["אישור  תשלום"], days_back=30, unread_only=False)
+        assert 'subject:"אישור תשלום"' in q
+
+
 class TestQueryLengthBound:
     """Pin the practical Gmail query-length ceiling. The old build_query
     produced ~2.5-3 KB queries; longer queries silently return empty results."""

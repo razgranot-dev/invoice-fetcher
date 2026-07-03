@@ -124,32 +124,69 @@ def _date_range_subtitle(rows: list[dict]) -> str:
 # ── Bank of Israel exchange rates ────────────────────────────────────────────
 
 def _find_business_day(d: date) -> tuple[date, bool]:
-    """Walk back to the nearest business day (Mon-Fri). Returns (date, was_weekend)."""
+    """Walk back to the nearest Israeli business day (Sun-Thu).
+
+    The Israeli weekend is Friday+Saturday — the Bank of Israel publishes no
+    representative rates on those days. Sunday IS a business day here.
+    Returns (date, was_weekend).
+    """
     original = d
-    while d.weekday() >= 5:  # 5=Sat, 6=Sun
+    while d.weekday() in (4, 5):  # 4=Fri, 5=Sat — Israeli weekend
         d -= timedelta(days=1)
     return d, d != original
 
 
-def _fetch_boi_rate(d: date) -> float | None:
-    """Fetch USD/ILS exchange rate from Bank of Israel for a given date."""
+def _obs_date_from_structure(data: dict, obs_index: int) -> date | None:
+    """Map an SDMX-JSON observation index back to its calendar date.
+
+    Tries both SDMX-JSON shapes (2.x: data.structures[]; 1.0: structure at the
+    top level). Returns None when the structure block is absent or unparseable.
+    """
+    payload = data.get("data") or {}
+    structures = list(payload.get("structures") or [])
+    if isinstance(data.get("structure"), dict):
+        structures.append(data["structure"])
+    for st in structures:
+        try:
+            values = st["dimensions"]["observation"][0]["values"]
+            raw = values[obs_index]
+            ds = str(raw.get("start") or raw.get("id") or raw.get("name"))[:10]
+            return datetime.strptime(ds, "%Y-%m-%d").date()
+        except Exception:
+            continue
+    return None
+
+
+def _fetch_boi_rate(d: date) -> tuple[float | None, date | None]:
+    """Fetch the USD/ILS rate from Bank of Israel nearest to a given date.
+
+    Queries a trailing 7-day window ending at the nearest business day, so
+    holidays and any BOI publication-calendar mismatch still resolve to the
+    most recent published rate. Returns (rate, actual_rate_date) — the date
+    the returned rate was actually published on — or (None, None) on failure.
+    """
     biz_day, _ = _find_business_day(d)
-    ds = biz_day.strftime("%Y-%m-%d")
+    start = (biz_day - timedelta(days=7)).strftime("%Y-%m-%d")
+    end = biz_day.strftime("%Y-%m-%d")
     url = (
         f"https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/"
         f"BOI.STATISTICS/EXR/1.0/RER_USD_ILS"
-        f"?startperiod={ds}&endperiod={ds}&format=sdmx-json"
+        f"?startperiod={start}&endperiod={end}&format=sdmx-json"
     )
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
         observations = data["data"]["dataSets"][0]["series"]["0:0:0:0"]["observations"]
-        for key in observations:
-            return float(observations[key][0])
+        if not observations:
+            return None, None
+        latest_key = max(observations, key=int)
+        rate = float(observations[latest_key][0])
+        rate_date = _obs_date_from_structure(data, int(latest_key)) or biz_day
+        return rate, rate_date
     except Exception as e:
-        logger.warning("Failed to fetch BOI rate for %s: %s", ds, e)
-    return None
+        logger.warning("Failed to fetch BOI rate for %s..%s: %s", start, end, e)
+    return None, None
 
 
 def _get_exchange_rates(rows: list[dict]) -> list[dict]:
@@ -166,12 +203,17 @@ def _get_exchange_rates(rows: list[dict]) -> list[dict]:
 
     rates = []
     for ds, d in sorted(usd_dates.items()):
-        biz_day, was_weekend = _find_business_day(d)
-        rate = _fetch_boi_rate(d)
+        rate, rate_date = _fetch_boi_rate(d)
+        if rate_date is None:
+            # Fetch failed — fall back to the calendar walk-back so the
+            # report still shows which day WOULD have been used.
+            rate_date, _ = _find_business_day(d)
         entry = {
             "date": ds,
-            "biz_day": biz_day.strftime("%Y-%m-%d"),
-            "was_weekend": was_weekend,
+            # The day the rate was actually published on (may differ from the
+            # invoice date on weekends AND holidays).
+            "biz_day": rate_date.strftime("%Y-%m-%d"),
+            "was_weekend": rate_date != d,
             "rate": rate,
         }
         rates.append(entry)

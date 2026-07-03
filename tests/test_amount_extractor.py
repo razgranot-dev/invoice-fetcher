@@ -56,6 +56,40 @@ class TestExtractAmount:
         result = extract_amount("₪1,250.00")
         assert result["amount"] == 1250.00
 
+    def test_euro_symbol(self):
+        result = extract_amount("Total: €12.99")
+        assert result["amount"] == 12.99
+        assert result["currency"] == "EUR"
+        assert result["confidence"] == "high"
+
+    def test_euro_code(self):
+        result = extract_amount("Amount due EUR 49.00")
+        assert result["amount"] == 49.00
+        assert result["currency"] == "EUR"
+
+    def test_gbp_symbol(self):
+        result = extract_amount("You paid £8.50")
+        assert result["amount"] == 8.50
+        assert result["currency"] == "GBP"
+
+    def test_labeled_total_beats_larger_marketing_number(self):
+        # A "save $100" marketing line must NOT win over the labeled total.
+        text = "You saved $100 this month! Total: $9.99"
+        result = extract_amount(text)
+        assert result["amount"] == 9.99
+        assert result["currency"] == "USD"
+
+    def test_bare_integer_after_label_is_ignored(self):
+        # "Total items: 2026" is a count, not a charged amount — the decimal
+        # requirement on unlabeled-symbol-less totals keeps it out.
+        result = extract_amount("Total items: 2026")
+        assert result["amount"] is None
+
+    def test_labeled_total_wins_over_item_prices(self):
+        text = "Item A $50.00\nItem B $30.00\nTotal: $80.00"
+        result = extract_amount(text)
+        assert result["amount"] == 80.00
+
 
 class TestExtractDescription:
     def test_cleans_re_prefix(self):

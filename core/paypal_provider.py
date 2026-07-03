@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from core import brand_data
+
 # ── Document types ──────────────────────────────────────────────────────────
 DOC_RECEIPT = "receipt"
 DOC_INVOICE = "invoice"
@@ -130,10 +132,36 @@ _NON_TXN_SUBJECT_PATTERNS: tuple[str, ...] = (
 )
 
 
+def _compile_non_txn_matcher(patterns: tuple[str, ...]) -> "re.Pattern[str]":
+    """Compile the non-transactional blocklist into one alternation regex.
+
+    Latin patterns get word-boundary lookaround guards so short tokens can't
+    fire mid-word: bare substring matching demoted real receipts — 'earn '
+    matched inside 'Learn Academy', 'sign in' inside 'Design Inc'. Guards are
+    added only where the pattern starts/ends with an ASCII letter, preserving
+    intentional trailing spaces (e.g. 'earn ') and symbol edges ('% off').
+    Hebrew patterns keep plain substring semantics on purpose — prefix letters
+    (ה/ל/ב/מ) attach to the word, so 'ההצעה' must still match 'הצעה'.
+    Matched against a lowercased subject, hence [a-z] in the guards.
+    """
+    alternatives = []
+    for p in patterns:
+        esc = re.escape(p)
+        if p[0].isascii() and p[0].isalpha():
+            esc = r"(?<![a-z])" + esc
+        if p[-1].isascii() and p[-1].isalpha():
+            esc = esc + r"(?![a-z])"
+        alternatives.append(esc)
+    return re.compile("|".join(alternatives))
+
+
+_NON_TXN_RE = _compile_non_txn_matcher(_NON_TXN_SUBJECT_PATTERNS)
+
+
 def is_non_transactional_subject(subject: str | None) -> bool:
     """True for PayPal security / marketing / account subjects (never a receipt)."""
     s = (subject or "").lower()
-    return any(p in s for p in _NON_TXN_SUBJECT_PATTERNS)
+    return bool(_NON_TXN_RE.search(s))
 
 
 def is_transactional_subject(subject: str | None) -> bool:
@@ -214,11 +242,29 @@ _MERCHANT_BODY = (
     # Hebrew "ל-MERCHANT" / "מ-MERCHANT" — same anti-verb guard as the subject.
     re.compile(r"(?:^|\s)[למ][-־]\s*([^\n.,]{2,60})"),
 )
-_BIZ_SUFFIX = re.compile(
-    r"\s*(?:,?\s*(?:international|inc\.?|ltd\.?|llc\.?|gmbh|limited|"
-    r"s\.?a\.?|b\.?v\.?|pte\.?|pvt\.?|ab|co\.?))\s*$",
-    re.IGNORECASE,
-)
+def _compile_biz_suffix() -> "re.Pattern[str]":
+    """Build the trailing business-suffix stripper from the shared brand data
+    (web/src/lib/brand-data.json via core/brand_data.py) — the same suffix
+    list the web's canonical supplier resolver uses.
+
+    Short all-letter tokens get optional dots between letters ("sa" also
+    matches "S.A.", "bv" matches "B.V."); longer tokens allow one trailing
+    dot ("Ltd."). A separator (space or comma) is REQUIRED before the suffix
+    so "Monaco" can never lose its "co".
+    """
+    alternatives: list[str] = []
+    for tok in brand_data.business_suffixes():
+        if tok.isascii() and tok.isalpha() and len(tok) <= 3:
+            alternatives.append(r"\.?".join(re.escape(c) for c in tok) + r"\.?")
+        else:
+            alternatives.append(re.escape(tok) + r"\.?")
+    return re.compile(
+        r"(?:\s*,\s*|\s+)(?:" + "|".join(alternatives) + r")\s*$",
+        re.IGNORECASE,
+    )
+
+
+_BIZ_SUFFIX = _compile_biz_suffix()
 _TAG_RE = re.compile(r"<[^>]+>")
 _BIDI_RE = re.compile(r"[‎‏‪-‮⁦-⁩]")
 

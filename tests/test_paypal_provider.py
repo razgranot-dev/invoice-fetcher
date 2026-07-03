@@ -105,6 +105,39 @@ def test_non_transactional_rejected(subject):
     assert intent is None
 
 
+# ── M15 regression: blocklist tokens must not fire mid-word ─────────────────
+# Bare substring matching demoted REAL receipts: 'earn ' matched inside
+# 'Learn Academy', 'sign in' inside 'Design Inc'. The blocklist is now
+# compiled with word-boundary lookaround guards on Latin patterns, while
+# Hebrew patterns keep substring semantics (prefix letters ה/ל/ב/מ attach
+# to the word, so 'ההצעה' must still match 'הצעה').
+
+def test_learn_academy_receipt_not_demoted():
+    subject = "Receipt for your payment to Learn Academy"
+    assert pp.is_non_transactional_subject(subject) is False
+    assert pp.is_transactional_subject(subject) is True
+    intent = pp.classify_intent({"sender": "service@paypal.com", "subject": subject,
+                                 "body_html": PAYPAL_HTML_EN})
+    assert intent and intent["is_transaction"] is True
+
+
+def test_design_inc_receipt_not_demoted():
+    """'sign in' must not fire inside 'De-SIGN IN-c'."""
+    subject = "You paid Design Inc"
+    assert pp.is_non_transactional_subject(subject) is False
+    assert pp.is_transactional_subject(subject) is True
+
+
+@pytest.mark.parametrize("subject", [
+    "Earn rewards with PayPal",          # word-start 'earn' still fires
+    "Your payment failed",               # 'failed' still fires at word boundary
+    "We noticed a new login to your account",
+    "ההצעה המיוחדת שלך",                 # Hebrew prefix absorption: ההצעה→הצעה
+])
+def test_blocklist_still_fires_on_word_boundaries(subject):
+    assert pp.is_non_transactional_subject(subject) is True
+
+
 def test_non_paypal_sender_returns_none():
     assert pp.classify_intent({"sender": "billing@stripe.com",
                                "subject": "You paid $5 to X"}) is None

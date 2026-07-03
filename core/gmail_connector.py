@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import traceback
@@ -19,7 +20,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
-from core import paypal_provider
+from core import brand_data, paypal_provider
 
 _log = logging.getLogger(__name__)
 
@@ -491,24 +492,14 @@ class GmailConnector:
     # "Hostinger" display name — broader and more robust than `from:domain`.
     # Discovery over-fetch is safe: the classifier still decides per email.
     # Short/ambiguous tokens (e.g. "hot") use the full domain to avoid
-    # accidental matches. MUST stay roughly in sync with _INVOICE_SENDER_DOMAINS
-    # in invoice_classifier.py (the scoring list). PayPal is added via
-    # _QUERY_PROCESSOR_FROM_TOKENS above.
+    # accidental matches. Sourced from the shared brand data
+    # (web/src/lib/brand-data.json via core/brand_data.py) so web + worker
+    # brand knowledge cannot drift. PayPal is added via
+    # _QUERY_PROCESSOR_FROM_TOKENS above; invoice_classifier.py's
+    # _INVOICE_SENDER_DOMAINS (the scoring list) should cover at least these
+    # brands too.
     _QUERY_BRAND_FROM_TOKENS: list[str] = [
-        # Payment processors / SaaS
-        "stripe", "apple", "openai", "anthropic", "vercel", "render",
-        "hostinger", "shopify", "canva", "higgsfield", "wix", "squarespace",
-        "notion", "linkedin", "microsoft", "adobe", "spotify", "netflix",
-        "zoom", "namecheap", "godaddy", "digitalocean", "heroku", "dropbox",
-        "google", "amazon", "facebookmail",
-        # Ride / delivery / travel
-        "uber", "lyft", "gett", "bolt", "wolt", "doordash", "booking",
-        "airbnb", "expedia", "agoda",
-        # E-commerce
-        "aliexpress", "ebay", "etsy", "temu",
-        # Israeli vendors / invoicing SaaS
-        "cibus", "tenbis", "cellcom", "bezeq", "partner", "pelephone",
-        "hot.net.il", "greeninvoice", "icount",
+        *brand_data.query_brand_tokens(),
     ]
 
     # Hard cap on query length. Gmail's q parameter has a practical upper
@@ -549,10 +540,15 @@ class GmailConnector:
 
         clauses: list[str] = []
 
-        # 1. User-provided keywords — quoted so multi-word phrases stay intact
+        # 1. User-provided keywords — quoted so multi-word phrases stay intact.
+        #    Gmail query metacharacters are stripped first: a stray `"` inside
+        #    a keyword terminates the quoted phrase early, and a following
+        #    `)`/`}` then breaks the OR group — Gmail silently returns empty
+        #    results (or 400s). Gmail has no escape syntax inside quoted
+        #    phrases, so removal is the only safe normalization.
         seen_words: set[str] = set()
         for kw in keywords:
-            stripped = kw.strip()
+            stripped = re.sub(r"\s+", " ", re.sub(r'["(){}\\]', " ", kw)).strip()
             if not stripped or stripped.lower() in seen_words:
                 continue
             clauses.append(f'subject:"{stripped}"')
