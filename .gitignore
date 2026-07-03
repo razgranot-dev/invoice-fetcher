@@ -36,12 +36,16 @@ Thumbs.db
 *.mov
 *.mp4
 
+# Node (root-level pg helper deps for scripts/diagnostics)
+node_modules/
+
 # Junk / accidental file creation
 .main
 1.23.0*
 button[kind*
 list[dict]*
 str
+null)
 {encoded.hex()}*
 
 # Debug / diagnostic scripts
