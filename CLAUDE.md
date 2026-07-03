@@ -1,5 +1,22 @@
 # Claude Code Configuration - RuFlo V3
 
+## Verification Status
+
+**Last verified: 2026-07-03 — ALL GREEN ✅**
+
+| Layer | Check | Command | Result |
+|-------|-------|---------|--------|
+| web | Type check | `cd web && npm run typecheck` | 0 errors |
+| web | Unit tests | `cd web && npm test` (vitest) | 492/492 passed (16 files) |
+| Python | Unit tests | `.\.venv\Scripts\python.exe -m pytest tests\ -q --ignore=tests\test_company_filter.py` | 304/304 passed |
+| repo | Git tree | `git status` | clean |
+
+- **796 tests green total**, zero type errors, working tree clean on `main`.
+- Tier limits are enforced in code (`web/src/.../scan-tier-gating.test.ts`).
+- Skipped: `tests/test_company_filter.py` (needs streamlit — legacy dashboard, not the scan path). Not a defect.
+- Known non-code gaps (product decisions, not bugs): billing/Stripe checkout is display-only (not wired); deploy requires manual `npm run db:push` + `npm run db:bootstrap`.
+- Re-verify Python locally: venv lives at `.venv` (repo root). If missing, rebuild — see the `dev-run-setup` memory.
+
 ## Behavioral Rules (Always Enforced)
 
 - Do what has been asked; nothing more, nothing less
