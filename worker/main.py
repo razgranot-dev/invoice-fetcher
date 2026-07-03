@@ -7,10 +7,15 @@ Called by the Next.js app to execute Gmail scans and exports.
 Start: python -m worker.main (binds to 0.0.0.0:$PORT, default 8000)
 """
 
+import asyncio
+import hmac
+import json
 import logging
 import os
+import re
 import sys
 import time
+import uuid
 from threading import Lock
 from typing import Any
 
@@ -94,6 +99,14 @@ app = FastAPI(title="Invoice Fetcher Worker", version="0.1.0")
 
 _WORKER_SECRET = os.getenv("WORKER_SECRET", "")
 
+if not _WORKER_SECRET:
+    # Loud at import time (covers uvicorn-direct AND python -m worker.main):
+    # an unset secret silently disables auth on every endpoint.
+    logger.critical(
+        "WORKER_SECRET not set — worker API is UNAUTHENTICATED. "
+        "Set WORKER_SECRET in production to prevent unauthorized access."
+    )
+
 
 @app.middleware("http")
 async def verify_worker_auth(request: Request, call_next):
@@ -104,7 +117,9 @@ async def verify_worker_auth(request: Request, call_next):
     if _WORKER_SECRET:
         auth_header = request.headers.get("authorization", "")
         expected = f"Bearer {_WORKER_SECRET}"
-        if auth_header != expected:
+        # Constant-time compare — a plain != leaks the match length/prefix
+        # through response timing.
+        if not hmac.compare_digest(auth_header.encode(), expected.encode()):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid or missing worker authorization"},
@@ -113,12 +128,19 @@ async def verify_worker_auth(request: Request, call_next):
     return await call_next(request)
 
 
-# ── In-memory file cache (TTL-based, size-bounded) ───────────────────────────
+# ── Export file cache (memory hot cache + disk persistence) ─────────────────
+# Memory is a TTL/size-bounded hot cache; every entry with a valid CUID job_id
+# is ALSO persisted to disk so pending downloads survive a worker restart or
+# redeploy (previously every restart 410'd all pending downloads).
 
 _FILE_CACHE: dict[str, dict] = {}
 _CACHE_TTL = 1800  # 30 minutes
 _CACHE_MAX_ENTRIES = 50  # Max cached files to prevent OOM
 _CACHE_MAX_BYTES = 500 * 1024 * 1024  # 500 MB total cache limit
+_CACHE_DIR = os.path.join("output", "exports", "cache")
+# CUID shape — the ONLY job_id form allowed to become a filename. Client
+# supplied, so anything else (e.g. "../evil") must never reach a path.
+_JOB_ID_RE = re.compile(r"c[a-zA-Z0-9]{20,30}")
 _cache_lock = Lock()
 
 
@@ -127,17 +149,99 @@ def _cache_total_bytes() -> int:
     return sum(len(v.get("data", b"")) for v in _FILE_CACHE.values())
 
 
-def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
-    """Store a generated file in the in-memory cache.
+def _disk_cache_paths(job_id: str) -> tuple[str, str]:
+    return (
+        os.path.join(_CACHE_DIR, f"{job_id}.bin"),
+        os.path.join(_CACHE_DIR, f"{job_id}.json"),
+    )
 
-    Enforces entry count and total size limits. Evicts oldest entries
-    when limits are exceeded to prevent unbounded memory growth.
+
+def _disk_cache_unlink(job_id: str) -> None:
+    for p in _disk_cache_paths(job_id):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _disk_cache_put(job_id: str, data: bytes, metadata: dict) -> None:
+    """Persist an export to disk (atomic tmp-file + os.replace)."""
+    if not _JOB_ID_RE.fullmatch(job_id):
+        logger.warning(
+            "Disk cache skipped — job_id %r is not a valid CUID", job_id[:40]
+        )
+        return
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        bin_path, meta_path = _disk_cache_paths(job_id)
+        tmp_bin = bin_path + ".tmp"
+        with open(tmp_bin, "wb") as f:
+            f.write(data)
+        os.replace(tmp_bin, bin_path)
+        tmp_meta = meta_path + ".tmp"
+        with open(tmp_meta, "w", encoding="utf-8") as f:
+            json.dump({**metadata, "created": time.time()}, f)
+        os.replace(tmp_meta, meta_path)
+    except OSError as e:
+        logger.warning("Disk cache write failed for %s: %s", job_id, e)
+
+
+def _disk_cache_get(job_id: str) -> dict | None:
+    """Load a persisted export. Expired pairs are unlinked on access."""
+    if not _JOB_ID_RE.fullmatch(job_id):
+        return None
+    bin_path, meta_path = _disk_cache_paths(job_id)
+    if not (os.path.isfile(bin_path) and os.path.isfile(meta_path)):
+        return None
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if time.time() - float(meta.get("created", 0)) > _CACHE_TTL:
+            _disk_cache_unlink(job_id)
+            return None
+        with open(bin_path, "rb") as f:
+            data = f.read()
+        return {"data": data, **meta}
+    except (OSError, ValueError) as e:
+        logger.warning("Disk cache read failed for %s: %s", job_id, e)
+        return None
+
+
+def _disk_cache_sweep() -> None:
+    """Unlink expired/orphaned disk-cache files. Runs at startup (purging
+    leftovers from before a crash) and opportunistically on each put."""
+    if not os.path.isdir(_CACHE_DIR):
+        return
+    now = time.time()
+    for name in os.listdir(_CACHE_DIR):
+        path = os.path.join(_CACHE_DIR, name)
+        try:
+            if name.endswith(".json"):
+                with open(path, "r", encoding="utf-8") as f:
+                    created = float(json.load(f).get("created", 0))
+                if now - created > _CACHE_TTL:
+                    _disk_cache_unlink(name[:-5])
+            elif now - os.path.getmtime(path) > _CACHE_TTL:
+                # Orphaned .bin or leftover .tmp from an interrupted write.
+                os.remove(path)
+        except (OSError, ValueError):
+            continue
+
+
+def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
+    """Store a generated file (memory hot cache + disk persistence).
+
+    Memory enforces entry count and total size limits, evicting oldest
+    entries to prevent unbounded growth. Disk persistence only happens for
+    valid CUID job_ids and is what lets downloads survive a restart.
+    Blocking (disk I/O) — call via asyncio.to_thread from async code.
     """
+    meta = dict(metadata or {})
     with _cache_lock:
         _FILE_CACHE[job_id] = {
             "data": data,
             "created": time.time(),
-            **(metadata or {}),
+            **meta,
         }
         _cache_cleanup()
         # Evict oldest entries if over count or size limits
@@ -149,26 +253,41 @@ def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
             if oldest_key == job_id:
                 break  # Don't evict the entry we just added
             del _FILE_CACHE[oldest_key]
+    _disk_cache_put(job_id, data, meta)
+    _disk_cache_sweep()
 
 
 def _cache_get(job_id: str) -> dict | None:
-    """Retrieve a cached file. Returns None if expired or missing."""
+    """Retrieve a cached file (memory first, then disk). None if expired or
+    missing. Blocking on the disk path — call via asyncio.to_thread."""
     with _cache_lock:
         entry = _FILE_CACHE.get(job_id)
-        if not entry:
-            return None
-        if time.time() - entry["created"] > _CACHE_TTL:
-            del _FILE_CACHE[job_id]
-            return None
-        return entry
+        if entry:
+            if time.time() - entry["created"] > _CACHE_TTL:
+                del _FILE_CACHE[job_id]
+            else:
+                return entry
+    # Memory miss (fresh process, eviction, or expiry) — try the disk copy.
+    entry = _disk_cache_get(job_id)
+    if entry:
+        with _cache_lock:
+            _FILE_CACHE.setdefault(job_id, entry)
+    return entry
 
 
 def _cache_cleanup():
-    """Remove expired entries. Called inside _cache_put (already holds lock)."""
+    """Remove expired memory entries. Called inside _cache_put (holds lock)."""
     now = time.time()
     expired = [k for k, v in _FILE_CACHE.items() if now - v["created"] > _CACHE_TTL]
     for k in expired:
         del _FILE_CACHE[k]
+
+
+# Startup sweep — purge disk-cache leftovers that expired while down.
+try:
+    _disk_cache_sweep()
+except Exception:  # never block worker startup on cache hygiene
+    logger.warning("Startup disk-cache sweep failed", exc_info=True)
 
 
 # ── Request/Response models ──────────────────────────────────────────────
@@ -262,84 +381,90 @@ async def debug_discovery(req: DiscoveryDebugRequest):
             "hint": "Reconnect Gmail and tick the Gmail box on Google's consent screen.",
         })
 
-    since = (_dt.now() - _td(days=req.days_back)).strftime("%Y/%m/%d")
-    full_query = connector.build_query([], req.days_back, unread_only=False)
+    def _run() -> dict:
+        # Blocking Gmail pipeline (15+ serial list/get calls with time.sleep
+        # retry backoff) — runs in a worker thread via asyncio.to_thread below
+        # so the event loop (/health, concurrent scans) stays responsive (H5).
+        since = (_dt.now() - _td(days=req.days_back)).strftime("%Y/%m/%d")
+        full_query = connector.build_query([], req.days_back, unread_only=False)
 
-    probes: dict[str, Any] = {}
-    probe_specs = [
-        ("from:paypal", f"after:{since} from:paypal"),
-        ("from:paypal.com", f"after:{since} from:paypal.com"),
-        ("word:paypal", f"after:{since} paypal"),
-        ("category:purchases", f"after:{since} category:purchases"),
-        ("full_scan_query", full_query),
-    ]
-    for label, q in probe_specs:
+        probes: dict[str, Any] = {}
+        probe_specs = [
+            ("from:paypal", f"after:{since} from:paypal"),
+            ("from:paypal.com", f"after:{since} from:paypal.com"),
+            ("word:paypal", f"after:{since} paypal"),
+            ("category:purchases", f"after:{since} category:purchases"),
+            ("full_scan_query", full_query),
+        ]
+        for label, q in probe_specs:
+            try:
+                resp = connector._exec(
+                    connector.service.users().messages().list(userId="me", q=q, maxResults=5)
+                )
+                ids = [m["id"] for m in resp.get("messages", [])]
+                samples = []
+                for mid in ids[:5]:
+                    try:
+                        raw = connector.get_message(mid)
+                        parsed = connector.parse_message(raw)
+                        samples.append({
+                            "sender": (parsed.get("sender") or "")[:120],
+                            "subject": (parsed.get("subject") or "")[:140],
+                            "date": (parsed.get("date") or "")[:40],
+                        })
+                    except Exception as e:
+                        samples.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
+                probes[label] = {
+                    "result_size_estimate": resp.get("resultSizeEstimate"),
+                    "returned_ids": len(ids),
+                    "samples": samples,
+                }
+            except Exception as e:
+                probes[label] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+
+        # Classification sample on the from:paypal hits — proves parse → classify.
+        from core.invoice_classifier import classify_email as _classify_one
+        pipeline_sample = []
         try:
-            resp = connector._exec(
-                connector.service.users().messages().list(userId="me", q=q, maxResults=5)
+            pp_resp = connector._exec(
+                connector.service.users().messages().list(
+                    userId="me", q=f"after:{since} from:paypal", maxResults=10
+                )
             )
-            ids = [m["id"] for m in resp.get("messages", [])]
-            samples = []
-            for mid in ids[:5]:
+            for mid in [m["id"] for m in pp_resp.get("messages", [])][:10]:
                 try:
                     raw = connector.get_message(mid)
                     parsed = connector.parse_message(raw)
-                    samples.append({
+                    cls = _classify_one(parsed)
+                    intent = paypal_provider.classify_intent(parsed)
+                    ex = paypal_provider.extract_paypal(parsed) if intent else {}
+                    pipeline_sample.append({
                         "sender": (parsed.get("sender") or "")[:120],
                         "subject": (parsed.get("subject") or "")[:140],
-                        "date": (parsed.get("date") or "")[:40],
+                        "tier": cls.get("classification_tier"),
+                        "score": cls.get("classification_score"),
+                        "is_transaction": bool(intent),
+                        "merchant": ex.get("merchant"),
+                        "amount": ex.get("amount"),
+                        "currency": ex.get("currency"),
                     })
                 except Exception as e:
-                    samples.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
-            probes[label] = {
-                "result_size_estimate": resp.get("resultSizeEstimate"),
-                "returned_ids": len(ids),
-                "samples": samples,
-            }
+                    pipeline_sample.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
         except Exception as e:
-            probes[label] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+            pipeline_sample.append({"error": f"{type(e).__name__}: {str(e)[:120]}"})
 
-    # Classification sample on the from:paypal hits — proves parse → classify.
-    from core.invoice_classifier import classify_email as _classify_one
-    pipeline_sample = []
-    try:
-        pp_resp = connector._exec(
-            connector.service.users().messages().list(
-                userId="me", q=f"after:{since} from:paypal", maxResults=10
-            )
-        )
-        for mid in [m["id"] for m in pp_resp.get("messages", [])][:10]:
-            try:
-                raw = connector.get_message(mid)
-                parsed = connector.parse_message(raw)
-                cls = _classify_one(parsed)
-                intent = paypal_provider.classify_intent(parsed)
-                ex = paypal_provider.extract_paypal(parsed) if intent else {}
-                pipeline_sample.append({
-                    "sender": (parsed.get("sender") or "")[:120],
-                    "subject": (parsed.get("subject") or "")[:140],
-                    "tier": cls.get("classification_tier"),
-                    "score": cls.get("classification_score"),
-                    "is_transaction": bool(intent),
-                    "merchant": ex.get("merchant"),
-                    "amount": ex.get("amount"),
-                    "currency": ex.get("currency"),
-                })
-            except Exception as e:
-                pipeline_sample.append({"error": f"{type(e).__name__}: {str(e)[:80]}"})
-    except Exception as e:
-        pipeline_sample.append({"error": f"{type(e).__name__}: {str(e)[:120]}"})
+        return {
+            "worker_version": WORKER_VERSION,
+            "paypal_discovery_anchor": _PAYPAL_DISCOVERY_ANCHOR,
+            "auth_ok": True,
+            "days_back": req.days_back,
+            "since": since,
+            "full_scan_query": full_query,
+            "probes": probes,
+            "paypal_classification_sample": pipeline_sample,
+        }
 
-    return JSONResponse(status_code=200, content={
-        "worker_version": WORKER_VERSION,
-        "paypal_discovery_anchor": _PAYPAL_DISCOVERY_ANCHOR,
-        "auth_ok": True,
-        "days_back": req.days_back,
-        "since": since,
-        "full_scan_query": full_query,
-        "probes": probes,
-        "paypal_classification_sample": pipeline_sample,
-    })
+    return JSONResponse(status_code=200, content=await asyncio.to_thread(_run))
 
 
 # ── Emergency PayPal direct import ───────────────────────────────────────────
@@ -386,134 +511,175 @@ async def debug_paypal_import(req: PaypalImportRequest):
             "hint": "Reconnect Gmail and tick the Gmail box on the consent screen.",
         })
 
-    since = (_dt.now() - _td(days=req.days_back)).strftime("%Y/%m/%d")
+    def _run() -> dict:
+        # Blocking Gmail pipeline — paginated discovery of up to 1500 ids plus
+        # 50-at-a-time batch fetches with time.sleep retry backoff. Runs in a
+        # worker thread via asyncio.to_thread below so the event loop (/health,
+        # concurrent scans) stays responsive for the minutes this can take (H5).
+        since = (_dt.now() - _td(days=req.days_back)).strftime("%Y/%m/%d")
 
-    def _estimate(q: str) -> int | None:
-        try:
-            r = connector._exec(connector.service.users().messages().list(
-                userId="me", q=q, maxResults=1))
-            return r.get("resultSizeEstimate")
-        except Exception:
-            return None
-
-    raw_from_paypal = _estimate(f"after:{since} from:paypal")
-    raw_paypal_word = _estimate(f"after:{since} paypal")
-    raw_full_query = _estimate(connector.build_query([], req.days_back, False))
-
-    # Discovery: PayPal sender OR the word paypal anywhere. Paginate (cap).
-    import_query = f"after:{since} (from:paypal OR paypal)"
-    ids: list[str] = []
-    page_token = None
-    while True:
-        params: dict = {"userId": "me", "q": import_query, "maxResults": 500}
-        if page_token:
-            params["pageToken"] = page_token
-        resp = connector._exec(connector.service.users().messages().list(**params))
-        ids.extend(m["id"] for m in resp.get("messages", []))
-        if len(ids) >= _PAYPAL_IMPORT_CAP:
-            ids = ids[:_PAYPAL_IMPORT_CAP]
-            break
-        page_token = resp.get("nextPageToken")
-        if not page_token:
-            break
-
-    body_parser = BodyParser()
-    fetched = 0
-    paypal_invoices: list[dict] = []
-    skipped: list[dict] = []
-    candidates = parsed_ok = confirmed_likely = 0
-
-    for bstart in range(0, len(ids), 50):
-        raw_msgs = connector.get_messages_batch(ids[bstart:bstart + 50])
-        for msg in raw_msgs:
-            if msg is None:
-                continue
-            fetched += 1
+        def _estimate(q: str) -> int | None:
             try:
-                parsed = connector.parse_message(msg)
-            except Exception as e:
-                skipped.append({"reason": f"parse_failed: {type(e).__name__}"})
-                continue
+                r = connector._exec(connector.service.users().messages().list(
+                    userId="me", q=q, maxResults=1))
+                return r.get("resultSizeEstimate")
+            except Exception:
+                return None
 
-            # Emergency import is PayPal-only: ignore non-PayPal senders that
-            # merely mention "paypal" in the body.
-            if not paypal_provider.is_paypal_sender(parsed.get("sender")):
-                continue
+        raw_from_paypal = _estimate(f"after:{since} from:paypal")
+        raw_paypal_word = _estimate(f"after:{since} paypal")
+        raw_full_query = _estimate(connector.build_query([], req.days_back, False))
 
-            cls = _classify_one(parsed)
-            parsed.update(cls)
-            tier = cls.get("classification_tier")
-            intent = paypal_provider.classify_intent(parsed)
-            if tier == "not_invoice" and not intent:
-                skipped.append({
-                    "sender": (parsed.get("sender") or "")[:100],
-                    "subject": (parsed.get("subject") or "")[:120],
-                    "reason": f"not a transaction (tier=not_invoice, score={cls.get('classification_score')})",
-                })
-                continue
+        # Discovery: PayPal sender OR the word paypal anywhere. Paginate (cap).
+        import_query = f"after:{since} (from:paypal OR paypal)"
+        ids: list[str] = []
+        page_token = None
+        while True:
+            params: dict = {"userId": "me", "q": import_query, "maxResults": 500}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = connector._exec(connector.service.users().messages().list(**params))
+            ids.extend(m["id"] for m in resp.get("messages", []))
+            if len(ids) >= _PAYPAL_IMPORT_CAP:
+                ids = ids[:_PAYPAL_IMPORT_CAP]
+                break
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
 
-            candidates += 1
-            try:
-                pp = paypal_provider.extract_paypal(parsed)
-                parsed["paypal"] = pp
-                parsed["paypal_dedup_key"] = paypal_provider.dedup_key(pp)
-                if pp.get("merchant"):
-                    parsed["company"] = pp["merchant"]
-                # amount/currency from provider, else generic extractor below
-                if pp.get("amount") is not None:
-                    parsed["amount"] = pp["amount"]
-                    parsed["currency"] = pp.get("currency") or "USD"
-                note_bits = []
-                if pp.get("doc_type"):
-                    note_bits.append(f"PayPal {pp['doc_type'].replace('_', ' ')}")
-                if pp.get("merchant"):
-                    note_bits.append(f"to {pp['merchant']}")
-                if pp.get("transaction_id"):
-                    note_bits.append(f"txn {pp['transaction_id']}")
-                parsed["notes"] = " · ".join(note_bits) if note_bits else (parsed.get("notes") or "")
-                parsed_ok += 1
-            except Exception as e:
-                skipped.append({"reason": f"extract_failed: {type(e).__name__}"})
+        body_parser = BodyParser()
+        fetched = 0
+        paypal_invoices: list[dict] = []
+        skipped: list[dict] = []
+        candidates = parsed_ok = confirmed_likely = 0
 
-            if tier in ("confirmed_invoice", "likely_invoice"):
-                confirmed_likely += 1
-
-            # Generic amount fallback when provider found none
-            if parsed.get("amount") is None:
+        for bstart in range(0, len(ids), 50):
+            raw_msgs = connector.get_messages_batch(ids[bstart:bstart + 50])
+            for msg in raw_msgs:
+                if msg is None:
+                    continue
+                fetched += 1
                 try:
-                    enriched_one = enrich_results([parsed])[0]
-                    parsed["amount"] = enriched_one.get("amount")
-                    parsed["currency"] = enriched_one.get("currency") or parsed.get("currency") or "USD"
-                except Exception:
-                    pass
+                    parsed = connector.parse_message(msg)
+                except Exception as e:
+                    skipped.append({"reason": f"parse_failed: {type(e).__name__}"})
+                    continue
 
-            parsed.pop("body_text", None)
-            for att in parsed.get("attachments", []):
-                att.pop("data", None)
-            paypal_invoices.append(parsed)
+                # Emergency import is PayPal-only: ignore non-PayPal senders that
+                # merely mention "paypal" in the body.
+                if not paypal_provider.is_paypal_sender(parsed.get("sender")):
+                    continue
 
-    funnel = {
-        "raw_from_paypal": raw_from_paypal,
-        "raw_paypal_word": raw_paypal_word,
-        "raw_full_scan_query": raw_full_query,
-        "discovery_ids": len(ids),
-        "fetched": fetched,
-        "paypal_candidates": candidates,
-        "parsed": parsed_ok,
-        "confirmed_or_likely": confirmed_likely,
-        "skipped": len(skipped),
-    }
-    logger.info("[PayPal IMPORT] funnel=%s", funnel)
+                cls = _classify_one(parsed)
+                parsed.update(cls)
+                tier = cls.get("classification_tier")
+                intent = paypal_provider.classify_intent(parsed)
+                if tier == "not_invoice" and not intent:
+                    skipped.append({
+                        "sender": (parsed.get("sender") or "")[:100],
+                        "subject": (parsed.get("subject") or "")[:120],
+                        "reason": f"not a transaction (tier=not_invoice, score={cls.get('classification_score')})",
+                    })
+                    continue
 
-    return JSONResponse(status_code=200, content={
-        "worker_version": WORKER_VERSION,
-        "auth_ok": True,
-        "days_back": req.days_back,
-        "import_query": import_query,
-        "funnel": funnel,
-        "skip_reasons": skipped[:50],
-        "invoices": paypal_invoices,
-    })
+                candidates += 1
+                try:
+                    pp = paypal_provider.extract_paypal(parsed)
+                    parsed["paypal"] = pp
+                    parsed["paypal_dedup_key"] = paypal_provider.dedup_key(pp)
+                    if pp.get("merchant"):
+                        parsed["company"] = pp["merchant"]
+                    # amount/currency from provider, else generic extractor below
+                    if pp.get("amount") is not None:
+                        parsed["amount"] = pp["amount"]
+                        parsed["currency"] = pp.get("currency") or "USD"
+                    note_bits = []
+                    if pp.get("doc_type"):
+                        note_bits.append(f"PayPal {pp['doc_type'].replace('_', ' ')}")
+                    if pp.get("merchant"):
+                        note_bits.append(f"to {pp['merchant']}")
+                    if pp.get("transaction_id"):
+                        note_bits.append(f"txn {pp['transaction_id']}")
+                    parsed["notes"] = " · ".join(note_bits) if note_bits else (parsed.get("notes") or "")
+                    parsed_ok += 1
+                except Exception as e:
+                    skipped.append({"reason": f"extract_failed: {type(e).__name__}"})
+
+                if tier in ("confirmed_invoice", "likely_invoice"):
+                    confirmed_likely += 1
+
+                # Generic amount fallback when provider found none
+                if parsed.get("amount") is None:
+                    try:
+                        enriched_one = enrich_results([parsed])[0]
+                        parsed["amount"] = enriched_one.get("amount")
+                        parsed["currency"] = enriched_one.get("currency") or parsed.get("currency") or "USD"
+                    except Exception:
+                        pass
+
+                parsed.pop("body_text", None)
+                for att in parsed.get("attachments", []):
+                    att.pop("data", None)
+                paypal_invoices.append(parsed)
+
+        funnel = {
+            "raw_from_paypal": raw_from_paypal,
+            "raw_paypal_word": raw_paypal_word,
+            "raw_full_scan_query": raw_full_query,
+            "discovery_ids": len(ids),
+            "fetched": fetched,
+            "paypal_candidates": candidates,
+            "parsed": parsed_ok,
+            "confirmed_or_likely": confirmed_likely,
+            "skipped": len(skipped),
+        }
+        logger.info("[PayPal IMPORT] funnel=%s", funnel)
+
+        return {
+            "worker_version": WORKER_VERSION,
+            "auth_ok": True,
+            "days_back": req.days_back,
+            "import_query": import_query,
+            "funnel": funnel,
+            "skip_reasons": skipped[:50],
+            "invoices": paypal_invoices,
+        }
+
+    return JSONResponse(status_code=200, content=await asyncio.to_thread(_run))
+
+
+# ── Scan cancellation ────────────────────────────────────────────────────
+# Cooperative cancel flags keyed by scan_id. POST /scan/cancel/{id} sets a
+# flag; the streaming scan pipeline checks it at every batch boundary and
+# stops cleanly with a final {"stage": "cancelled"} NDJSON line. Per-instance
+# in-memory state — fine for the single-worker deployment (a restart also
+# kills the scan itself). Flags expire after _CANCEL_TTL so the registry
+# cannot grow unbounded from cancels that never matched a running scan.
+# dict reads/writes are GIL-atomic and the scan generator runs in Starlette's
+# threadpool, so no lock is needed for this set-once/read-many flag.
+
+_CANCELLED_SCANS: dict[str, float] = {}
+_CANCEL_TTL = 3600  # seconds a cancel flag stays valid
+
+
+@app.post("/scan/cancel/{scan_id}")
+async def cancel_scan(scan_id: str):
+    """Request cooperative cancellation of a running scan.
+
+    Covered by the same bearer-auth middleware as /scan. Returns immediately;
+    the scan's NDJSON stream ends with a {"stage": "cancelled"} line at its
+    next batch boundary (fetch batch / classify item / enrich chunk).
+    """
+    if not scan_id or len(scan_id) > 64:
+        raise HTTPException(status_code=400, detail="Invalid scan ID")
+    now = time.time()
+    # Prune stale flags so cancels for long-gone scans don't accumulate.
+    for sid, ts in list(_CANCELLED_SCANS.items()):
+        if now - ts > _CANCEL_TTL:
+            _CANCELLED_SCANS.pop(sid, None)
+    _CANCELLED_SCANS[scan_id] = now
+    logger.info("[Scan %s] cancellation requested", scan_id)
+    return {"status": "cancel_requested", "scan_id": scan_id}
 
 
 # ── Scan ─────────────────────────────────────────────────────────────────
@@ -558,9 +724,36 @@ async def run_scan(req: ScanRequest):
     if not ok:
         raise HTTPException(status_code=401, detail=f"Gmail auth failed: {result}")
 
-    async def _generate():
+    # Plain sync generator ON PURPOSE: the whole pipeline below is blocking
+    # I/O (Gmail batches with time.sleep backoff, classification, enrichment).
+    # Starlette iterates sync generators in a threadpool, so /health and
+    # concurrent scans stay responsive. As an `async def` this blocked the
+    # entire event loop for the duration of every scan — platform health
+    # checks timed out and the instance was restarted mid-scan.
+    def _generate():
+        def _cancel_requested() -> bool:
+            return bool(req.scan_id) and req.scan_id in _CANCELLED_SCANS
+
+        def _cancelled_line(total_messages: int) -> str:
+            logger.info("[Scan %s] cancelled — stopping pipeline", req.scan_id)
+            return json.dumps({
+                "progress": 100,
+                "message": "Scan cancelled",
+                "stage": "cancelled",
+                "result": {
+                    "scan_id": req.scan_id,
+                    "total_messages": total_messages,
+                    "invoices": [],
+                    "error": "cancelled",
+                },
+            }) + "\n"
+
         try:
             yield json.dumps({"progress": 1, "message": "Searching inbox...", "stage": "search"}) + "\n"
+
+            if _cancel_requested():
+                yield _cancelled_line(0)
+                return
 
             # Log the EXACT discovery query so production can be audited from
             # logs — proves whether the PayPal anchor is present and whether an
@@ -623,6 +816,9 @@ async def run_scan(req: ScanRequest):
             # Skip attachment binary download — not needed for classification.
             _FETCH_BATCH = 50
             for batch_start in range(0, total, _FETCH_BATCH):
+                if _cancel_requested():
+                    yield _cancelled_line(total)
+                    return
                 batch_end = min(batch_start + _FETCH_BATCH, total)
                 batch_ids = msg_ids[batch_start:batch_end]
 
@@ -709,6 +905,9 @@ async def run_scan(req: ScanRequest):
             pp_parsed = 0
             pp_skipped = 0
             for r in results:
+                if _cancel_requested():
+                    yield _cancelled_line(total)
+                    return
                 _t = _time.perf_counter()
                 r.update(_classify_one(r))
                 _dur = _time.perf_counter() - _t
@@ -787,6 +986,9 @@ async def run_scan(req: ScanRequest):
             _ENRICH_BATCH = 50
             enriched: list[dict] = []
             for ei in range(0, n_results, _ENRICH_BATCH):
+                if _cancel_requested():
+                    yield _cancelled_line(total)
+                    return
                 chunk = results[ei:ei + _ENRICH_BATCH]
                 enriched.extend(enrich_results(chunk))
                 pct = 87 + int((ei + len(chunk)) / n_results * 8)  # 87–95%
@@ -795,6 +997,17 @@ async def run_scan(req: ScanRequest):
                     "message": f"Extracting amounts {ei + len(chunk)}/{n_results}",
                     "stage": "enrich",
                 }) + "\n"
+
+            # PayPal's structured extraction beats the generic regex when it
+            # found an amount — a €12.99 PayPal receipt must not be stored as
+            # "12.99 ILS" (the generic extractor defaults labeled totals to
+            # ILS and previously had no €/£ patterns at all).
+            for r in enriched:
+                pp = r.get("paypal") or {}
+                if pp.get("amount"):
+                    r["amount"] = pp["amount"]
+                    if pp.get("currency"):
+                        r["currency"] = pp["currency"]
 
             # Strip binary data
             for r in enriched:
@@ -867,6 +1080,11 @@ async def run_scan(req: ScanRequest):
                     "error": str(e),
                 },
             }) + "\n"
+        finally:
+            # Always drop the cancel flag when the stream ends (done, error,
+            # or cancelled) so a later scan reusing this id isn't insta-killed.
+            if req.scan_id:
+                _CANCELLED_SCANS.pop(req.scan_id, None)
 
     return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
@@ -885,83 +1103,75 @@ async def export_word(req: ExportRequest):
     import json as _json
     from starlette.responses import StreamingResponse
 
+    # job_id shapes the report filename and the cache-file path — reject
+    # anything that isn't a CUID before it can reach the filesystem.
+    if req.job_id and not _JOB_ID_RE.fullmatch(req.job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+
     async def _generate():
         from core.word_exporter import create_invoice_report
 
         invoices = list(req.invoices)
         total = len(invoices)
-        screenshot_failures = []
 
-        # Phase 1: Screenshots (0-70%)
-        if req.include_screenshots and total > 0:
-            yield _json.dumps({"progress": 2, "message": f"Capturing screenshots for {total} invoices..."}) + "\n"
-            try:
-                from core.email_screenshotter import generate_screenshots_with_progress
+        if req.include_screenshots:
+            # Dead flag kept for wire compat only: the .docx builder has never
+            # embedded screenshots, so the old "screenshot phase" burned 0-70%
+            # of the job for zero output. Screenshots ship via the dedicated
+            # /export/screenshots-zip endpoint instead.
+            logger.warning(
+                "export_word: include_screenshots=True ignored — Word reports "
+                "do not embed screenshots; use /export/screenshots-zip."
+            )
 
-                i = 0
-                async for inv_list in generate_screenshots_with_progress(invoices):
-                    invoices = inv_list
-                    inv = invoices[i]
-                    pct = int((i + 1) / total * 70)
-                    sender = inv.get("sender") or "unknown"
-                    error = inv.get("screenshot_error") or ""
-                    if error.startswith("skipped:"):
-                        msg = f"Screenshot {i + 1}/{total} {error} — {sender}"
-                    elif error:
-                        screenshot_failures.append({
-                            "supplier": inv.get("company") or inv.get("sender") or "Unknown",
-                            "date": str(inv.get("date") or "")[:10],
-                            "reason": error,
-                        })
-                        msg = f"Screenshot {i + 1}/{total} failed — {sender}"
-                    else:
-                        msg = f"Screenshot {i + 1}/{total} — {sender}"
-                    yield _json.dumps({"progress": pct, "message": msg}) + "\n"
-                    i += 1
-            except ImportError:
-                try:
-                    from core.email_screenshotter import generate_screenshots
-                    invoices = await generate_screenshots(invoices)
-                    yield _json.dumps({"progress": 70, "message": "Screenshots complete"}) + "\n"
-                except Exception as exc:
-                    yield _json.dumps({"progress": 70, "message": f"Screenshots skipped: {exc}"}) + "\n"
-            except Exception as e:
-                error_str = str(e) or repr(e)
-                logger.warning("Screenshot generation failed: %s", error_str)
-                if "failed to start" in error_str.lower() or "timed out" in error_str.lower():
-                    yield _json.dumps({"progress": 70, "message": f"Screenshot engine failed to start — continuing without screenshots. ({error_str[:200]})"}) + "\n"
-                else:
-                    yield _json.dumps({"progress": 70, "message": f"Screenshots failed: {error_str[:200]}"}) + "\n"
+        yield _json.dumps({
+            "progress": 5,
+            "message": f"Exporting {total} selected invoices...",
+            "count": total,
+        }) + "\n"
 
-            if screenshot_failures:
-                summary = f"{len(screenshot_failures)} screenshot(s) failed"
-                yield _json.dumps({"progress": 72, "message": summary}) + "\n"
-        else:
-            yield _json.dumps({"progress": 5, "message": "Preparing data..."}) + "\n"
-
-        # Phase 2: Build document (70-95%)
+        # Build document (5-95%)
         yield _json.dumps({"progress": 75, "message": "Building Word document..."}) + "\n"
 
         try:
-            path = create_invoice_report(
+            # Unique filename per job. A fixed date-based name meant two
+            # concurrent exports (e.g. from different organizations) wrote to
+            # the SAME path — and since the read happened after a progress
+            # yield, one org could download the other org's freshly-saved
+            # report. job_id is a CUID; fall back to a random name when absent.
+            report_name = f"invoices_report_{req.job_id or uuid.uuid4().hex}.docx"
+            # Off the event loop: the docx build makes sequential blocking
+            # Bank-of-Israel HTTP calls (one per distinct USD date) — inline
+            # it would freeze /health and every other request for its duration.
+            path = await asyncio.to_thread(
+                create_invoice_report,
                 invoices,
                 output_dir="output/exports",
+                filename=report_name,
                 organization_name=req.organization_name or None,
             )
             if not path:
                 yield _json.dumps({"progress": 100, "message": "No invoices to export", "error": "empty"}) + "\n"
                 return
 
-            yield _json.dumps({"progress": 90, "message": "Encoding document..."}) + "\n"
-
+            # Read the bytes BEFORE any yield suspends this generator, then
+            # remove the file — nothing must be able to swap it underneath us,
+            # and finished reports shouldn't accumulate on disk.
             with open(path, "rb") as f:
                 file_bytes = f.read()
+            try:
+                os.remove(path)
+            except OSError:
+                logger.warning("Could not remove temporary report file: %s", path)
 
-            # Cache file for later download when job_id is provided
+            yield _json.dumps({"progress": 90, "message": "Encoding document..."}) + "\n"
+
+            # Cache file for later download when job_id is provided.
+            # to_thread: _cache_put persists to disk — keep it off the loop.
             if req.job_id:
-                _cache_put(req.job_id, file_bytes, {
+                await asyncio.to_thread(_cache_put, req.job_id, file_bytes, {
                     "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    "filename": os.path.basename(path),
+                    "filename": report_name,
                 })
 
             result: dict[str, Any] = {"progress": 100, "message": "Complete"}
@@ -971,9 +1181,6 @@ async def export_word(req: ExportRequest):
                 result["job_id"] = req.job_id
             else:
                 result["file"] = base64.b64encode(file_bytes).decode()
-            if screenshot_failures:
-                result["message"] = f"Complete \u2014 {len(screenshot_failures)} screenshot(s) failed"
-                result["failures"] = screenshot_failures
             yield _json.dumps(result) + "\n"
 
         except Exception as e:
@@ -996,6 +1203,11 @@ async def export_screenshots_zip(req: ExportRequest):
     from starlette.responses import StreamingResponse
     from core.email_screenshotter import generate_screenshots_with_progress, SCREENSHOT_DIR
 
+    # job_id shapes the cache-file path — reject anything that isn't a CUID
+    # before it can reach the filesystem.
+    if req.job_id and not _JOB_ID_RE.fullmatch(req.job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID format")
+
     async def _generate():
         invoices = list(req.invoices)
         total = len(invoices)
@@ -1004,7 +1216,11 @@ async def export_screenshots_zip(req: ExportRequest):
             yield _json.dumps({"progress": 100, "message": "No invoices", "error": "empty"}) + "\n"
             return
 
-        yield _json.dumps({"progress": 2, "message": f"Capturing {total} invoice screenshots..."}) + "\n"
+        yield _json.dumps({
+            "progress": 2,
+            "message": f"Exporting {total} selected invoices — capturing screenshots...",
+            "count": total,
+        }) + "\n"
 
         # Phase 1: Generate screenshots (0-80%)
         try:
@@ -1073,86 +1289,106 @@ async def export_screenshots_zip(req: ExportRequest):
         yield _json.dumps({"progress": 85, "message": f"Building ZIP with {len(succeeded)} screenshots..."}) + "\n"
 
         try:
-            zip_buffer = io.BytesIO()
-            zipped_count = 0
-            skipped_missing = 0
-            seen_names: set[str] = set()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                for inv in succeeded:
-                    screenshot_path = inv.get("screenshot_path")
-                    if not screenshot_path or not os.path.isfile(screenshot_path):
-                        skipped_missing += 1
-                        inv_id_dbg = inv.get("id", "?")
-                        logger.warning(
-                            "ZIP: screenshot file missing for %s (path=%s, exists=%s)",
-                            inv_id_dbg, screenshot_path, os.path.isfile(screenshot_path) if screenshot_path else False,
-                        )
-                        failed.append({
-                            "id": inv_id_dbg,
-                            "supplier": inv.get("company") or inv.get("sender") or "Unknown",
-                            "sender": inv.get("sender") or "",
-                            "date": str(inv.get("date") or "")[:10],
-                            "subject": (inv.get("subject") or "")[:60],
-                            "reason": "Screenshot file missing from disk",
-                            "html_source": inv.get("screenshot_html_source", "unknown"),
-                        })
-                        continue
+            def _build_zip() -> tuple[bytes, int, int]:
+                # Blocking (disk reads + deflate) — runs via asyncio.to_thread
+                # below so the event loop stays responsive during large
+                # archives. Mutates `failed` in place; safe because the single
+                # builder thread is joined before `failed` is read again.
+                zip_buffer = io.BytesIO()
+                zipped_count = 0
+                skipped_missing = 0
+                seen_names: set[str] = set()
+                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for inv in succeeded:
+                        screenshot_path = inv.get("screenshot_path")
+                        if not screenshot_path or not os.path.isfile(screenshot_path):
+                            skipped_missing += 1
+                            inv_id_dbg = inv.get("id", "?")
+                            logger.warning(
+                                "ZIP: screenshot file missing for %s (path=%s, exists=%s)",
+                                inv_id_dbg, screenshot_path, os.path.isfile(screenshot_path) if screenshot_path else False,
+                            )
+                            failed.append({
+                                "id": inv_id_dbg,
+                                "supplier": inv.get("company") or inv.get("sender") or "Unknown",
+                                "sender": inv.get("sender") or "",
+                                "date": str(inv.get("date") or "")[:10],
+                                "subject": (inv.get("subject") or "")[:60],
+                                "reason": "Screenshot file missing from disk",
+                                "html_source": inv.get("screenshot_html_source", "unknown"),
+                            })
+                            continue
 
-                    sender = (inv.get("sender") or "unknown").split("@")[-1].replace(">", "").split(".")[0]
-                    date_str = str(inv.get("date") or "")[:10].replace("/", "-")
-                    inv_id = str(inv.get("id") or "")
-                    for ch in r'<>:"/\|?*':
-                        sender = sender.replace(ch, "_")
+                        # Name entries by supplier (sanitized). The sender domain
+                        # was misleading for routed receipts — every PayPal-routed
+                        # merchant became "paypal_*.png" and Apple receipts became
+                        # "email_*.png" (from no_reply@email.apple.com).
+                        stem = (inv.get("company") or "").strip()
+                        if not stem:
+                            stem = (inv.get("sender") or "unknown").split("@")[-1].replace(">", "").split(".")[0]
+                        for ch in '<>:"/\\|?* ':
+                            stem = stem.replace(ch, "_")
+                        stem = re.sub(r"_+", "_", stem).strip("_")[:40] or "unknown"
+                        date_str = str(inv.get("date") or "")[:10].replace("/", "-")
+                        # The invoice id also lands in the archive entry name —
+                        # strip anything path-shaped (zip-slip on extraction).
+                        inv_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(inv.get("id") or ""))[:64]
 
-                    zip_name = f"{sender}_{date_str}_{inv_id}.png"
-                    # Deduplicate filenames (shouldn't happen with full ID, but safety net)
-                    if zip_name in seen_names:
-                        counter = 2
-                        base = zip_name[:-4]
-                        while f"{base}_{counter}.png" in seen_names:
-                            counter += 1
-                        zip_name = f"{base}_{counter}.png"
-                    seen_names.add(zip_name)
+                        zip_name = f"{stem}_{date_str}_{inv_id}.png"
+                        # Deduplicate filenames (shouldn't happen with full ID, but safety net)
+                        if zip_name in seen_names:
+                            counter = 2
+                            base = zip_name[:-4]
+                            while f"{base}_{counter}.png" in seen_names:
+                                counter += 1
+                            zip_name = f"{base}_{counter}.png"
+                        seen_names.add(zip_name)
 
-                    zf.write(screenshot_path, zip_name)
-                    zipped_count += 1
+                        zf.write(screenshot_path, zip_name)
+                        zipped_count += 1
+
+                    # Failure diagnostic for ANY failure kind (render errors and
+                    # files missing from disk alike). Must be written while the
+                    # archive is still open — a previous version of this block sat
+                    # outside the `with`, so writestr() hit a closed ZipFile and a
+                    # single missing file failed the whole export.
+                    if failed:
+                        by_reason: dict[str, list] = {}
+                        for f in failed:
+                            reason = f["reason"] or "Unknown failure"
+                            by_reason.setdefault(reason, []).append(f)
+
+                        lines = [
+                            "Screenshot Failure Report",
+                            "========================",
+                            "",
+                            f"{zipped_count} screenshots succeeded, {len(failed)} failed out of {total} total.",
+                            "",
+                        ]
+
+                        for reason, items in by_reason.items():
+                            lines.append(f"--- {reason} ({len(items)} invoice{'s' if len(items) != 1 else ''}) ---")
+                            lines.append("")
+                            for item in items:
+                                parts = []
+                                if item["supplier"]:
+                                    parts.append(f"Supplier: {item['supplier']}")
+                                if item["date"]:
+                                    parts.append(f"Date: {item['date']}")
+                                if item["subject"]:
+                                    parts.append(f"Subject: {item['subject']}")
+                                parts.append(f"ID: {item['id']}")
+                                lines.append("  " + " | ".join(parts))
+                            lines.append("")
+
+                        zf.writestr("_failed_screenshots.txt", "\n".join(lines))
+
+                return zip_buffer.getvalue(), zipped_count, skipped_missing
+
+            zip_bytes, zipped_count, skipped_missing = await asyncio.to_thread(_build_zip)
 
             if skipped_missing:
                 logger.warning("ZIP: %d files were missing on disk despite successful render", skipped_missing)
-
-                # Include failure diagnostic only when there ARE successful screenshots alongside failures
-                if failed:
-                    by_reason: dict[str, list] = {}
-                    for f in failed:
-                        reason = f["reason"] or "Unknown failure"
-                        by_reason.setdefault(reason, []).append(f)
-
-                    lines = [
-                        "Screenshot Failure Report",
-                        "========================",
-                        "",
-                        f"{zipped_count} screenshots succeeded, {len(failed)} failed out of {total} total.",
-                        "",
-                    ]
-
-                    for reason, items in by_reason.items():
-                        lines.append(f"--- {reason} ({len(items)} invoice{'s' if len(items) != 1 else ''}) ---")
-                        lines.append("")
-                        for item in items:
-                            parts = []
-                            if item["supplier"]:
-                                parts.append(f"Supplier: {item['supplier']}")
-                            if item["date"]:
-                                parts.append(f"Date: {item['date']}")
-                            if item["subject"]:
-                                parts.append(f"Subject: {item['subject']}")
-                            parts.append(f"ID: {item['id']}")
-                            lines.append("  " + " | ".join(parts))
-                        lines.append("")
-
-                    zf.writestr("_failed_screenshots.txt", "\n".join(lines))
-
-            zip_bytes = zip_buffer.getvalue()
 
             yield _json.dumps({"progress": 95, "message": "Encoding ZIP..."}) + "\n"
 
@@ -1160,9 +1396,10 @@ async def export_screenshots_zip(req: ExportRequest):
             if failed:
                 summary += f", {len(failed)} failed"
 
-            # Cache file for later download when job_id is provided
+            # Cache file for later download when job_id is provided.
+            # to_thread: _cache_put persists to disk — keep it off the loop.
             if req.job_id:
-                _cache_put(req.job_id, zip_bytes, {
+                await asyncio.to_thread(_cache_put, req.job_id, zip_bytes, {
                     "content_type": "application/zip",
                     "filename": f"screenshots-{req.job_id}.zip",
                 })
@@ -1189,21 +1426,21 @@ async def export_screenshots_zip(req: ExportRequest):
     return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
 
-# ── File download (serves from in-memory cache) ────────────────────────────
+# ── File download (memory hot cache, disk fallback) ────────────────────────
 
 
 @app.get("/export/{job_id}/download")
 async def download_export(job_id: str):
     """Serve a cached export file. Files expire after 30 minutes."""
-    import re
     from starlette.responses import Response
 
     # Validate job_id format to prevent path traversal / injection.
     # Expected format: CUID (starts with 'c', alphanumeric, 20-30 chars).
-    if not re.fullmatch(r"c[a-zA-Z0-9]{20,30}", job_id):
+    if not _JOB_ID_RE.fullmatch(job_id):
         raise HTTPException(status_code=400, detail="Invalid job ID format")
 
-    entry = _cache_get(job_id)
+    # to_thread: on a memory miss _cache_get reads the disk copy.
+    entry = await asyncio.to_thread(_cache_get, job_id)
     if not entry:
         raise HTTPException(
             status_code=410,
