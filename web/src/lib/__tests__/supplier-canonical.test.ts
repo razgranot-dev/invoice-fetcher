@@ -21,6 +21,7 @@ import {
   canonicalSupplierKey,
   canonicalDisplayName,
   resolveSupplier,
+  UNKNOWN_KEY,
 } from "../supplier-canonical";
 
 describe("toCanonicalKey — vendor aliases", () => {
@@ -223,12 +224,14 @@ describe("canonicalSupplierKey — invoice resolution priority", () => {
     })).toBe("paypal");
   });
 
-  test("unknown company falls through to suffix-stripped company name", () => {
+  test("unknown company falls through to suffix-stripped, space-collapsed key", () => {
+    // Space collapse (M8): "Random Boutique" and "Randomboutique" must be ONE
+    // supplier, so the deterministic fallback key strips whitespace.
     const k = canonicalSupplierKey({
       company: "Random Boutique Inc.",
       senderDomain: null,
     });
-    expect(k).toBe("random boutique");
+    expect(k).toBe("randomboutique");
   });
 
   test("unknown company + unknown domain returns domain brand", () => {
@@ -278,6 +281,88 @@ describe("resolveSupplier — end-to-end", () => {
   test("בזק → key=bezeq, display=Bezeq", () => {
     const r = resolveSupplier({ company: "בזק", senderDomain: "bezeq.co.il" });
     expect(r).toEqual({ key: "bezeq", displayName: "Bezeq" });
+  });
+});
+
+describe("M9 — first-word over-merge is gone (full-token/alias match only)", () => {
+  test.each([
+    // Multi-word unknown brands must NOT merge into short brand keys.
+    ["Hot Bagels", "hot"],
+    ["Partner Solutions", "partner"],
+    ["Bolt Industries", "bolt"],
+    ["Meta Description Agency", "meta"],
+    ["Bird Watching Supplies", "bird"],
+  ])("company %s does not resolve to brand key %s", (company, brandKey) => {
+    const key = canonicalSupplierKey({ company, senderDomain: null });
+    expect(key).not.toBe(brandKey);
+    expect(key.length).toBeGreaterThan(0);
+  });
+
+  test.each([
+    // Legit multi-word brand variants are covered by EXPLICIT aliases.
+    ["Apple TV+", "apple"],
+    ["Apple TV", "apple"],
+    ["Apple Music", "apple"],
+    ["Google Drive", "google"],
+    ["Uber Eats", "uber"],
+  ])("%s → %s via explicit alias", (input, expected) => {
+    expect(toCanonicalKey(input)).toBe(expected);
+  });
+});
+
+describe("M10 — Hebrew legal suffixes and gershayim/quote variants", () => {
+  test('בע"מ variants and the bare name all produce the SAME key', () => {
+    const ascii = canonicalSupplierKey({ company: 'אקמי בע"מ' });
+    const gershayim = canonicalSupplierKey({ company: "אקמי בע״מ" });
+    const typographic = canonicalSupplierKey({ company: "אקמי בע”מ" });
+    const noSuffix = canonicalSupplierKey({ company: "אקמי" });
+    const noQuotes = canonicalSupplierKey({ company: "אקמי בעמ" });
+    expect(ascii).toBe("אקמי");
+    expect(gershayim).toBe(ascii);
+    expect(typographic).toBe(ascii);
+    expect(noSuffix).toBe(ascii);
+    expect(noQuotes).toBe(ascii);
+  });
+
+  test("known brand with Hebrew suffix still hits its alias", () => {
+    expect(toCanonicalKey("בזק בע״מ")).toBe("bezeq");
+    expect(toCanonicalKey('בזק בע"מ')).toBe("bezeq");
+  });
+
+  test('ע"ר (registered non-profit) suffix is stripped', () => {
+    expect(canonicalSupplierKey({ company: 'עמותת הצלה ע"ר' }))
+      .toBe(canonicalSupplierKey({ company: "עמותת הצלה" }));
+  });
+});
+
+describe("M8 — unknown-brand quality guards", () => {
+  test("space variants of unknown brands dedupe into one key", () => {
+    const spaced = canonicalSupplierKey({ company: "Beigel Bake" });
+    const mashed = canonicalSupplierKey({ company: "Beigelbake" });
+    expect(spaced).toBe("beigelbake");
+    expect(spaced).toBe(mashed);
+  });
+
+  test("'via TestFlight' tail is stripped for any brand", () => {
+    expect(toCanonicalKey("OpenAI via TestFlight")).toBe("openai");
+    expect(canonicalSupplierKey({ company: "SomeApp via TestFlight" }))
+      .toBe(canonicalSupplierKey({ company: "SomeApp" }));
+  });
+});
+
+describe("UNKNOWN_KEY contract (M12)", () => {
+  test("empty resolution + UNKNOWN_KEY fallback buckets under 'unknown'", () => {
+    expect(canonicalSupplierKey({}) || UNKNOWN_KEY).toBe("unknown");
+    expect(canonicalSupplierKey({ company: null, senderDomain: null }) || UNKNOWN_KEY)
+      .toBe(UNKNOWN_KEY);
+  });
+
+  test("UNKNOWN_KEY never collides with a real brand alias", () => {
+    expect(toCanonicalKey(UNKNOWN_KEY)).toBeNull();
+  });
+
+  test("UNKNOWN_KEY has a human display name", () => {
+    expect(canonicalDisplayName(UNKNOWN_KEY)).toBe("Unknown");
   });
 });
 

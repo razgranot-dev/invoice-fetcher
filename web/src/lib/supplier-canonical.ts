@@ -25,14 +25,33 @@
  */
 
 import { normalizeDomain, cleanCompanyName } from "./utils";
+import brandData from "./brand-data.json";
 
-// Business suffixes stripped during canonicalization
-const BUSINESS_SUFFIXES = new Set([
-  "inc", "inc.", "llc", "ltd", "ltd.", "pbc", "gmbh",
-  "sa", "s.a.", "bv", "b.v.", "pvt", "pte", "corp", "corp.",
-  "co", "co.", "limited", "international", "ag", "holdings",
-  "technologies", "platforms",
-]);
+/**
+ * Canonical key for invoices whose (company, senderDomain) yields no brand at
+ * all. Persisted into Invoice.supplierKey so the "Unknown" supplier chip can
+ * be excluded/filtered exactly like a real brand. Must never collide with a
+ * real canonical key ("unknown" appears in no alias group — guarded by test).
+ */
+export const UNKNOWN_KEY = "unknown";
+
+// Business suffixes stripped during canonicalization. Sourced from the shared
+// brand-data.json (single source of truth with the Python worker). The set
+// holds each suffix plus its dotted variants ("inc." / "s.a." / "b.v.") so
+// token-membership checks keep matching punctuation-carrying forms.
+const BUSINESS_SUFFIXES: ReadonlySet<string> = (() => {
+  const s = new Set<string>();
+  for (const suffix of brandData.businessSuffixes) {
+    s.add(suffix);
+    s.add(`${suffix}.`);
+    if (/^[a-z]{2,3}$/.test(suffix)) {
+      const dotted = suffix.split("").join(".");
+      s.add(dotted);
+      s.add(`${dotted}.`);
+    }
+  }
+  return s;
+})();
 
 /**
  * Brand-alias map: canonical key (lowercase) → variants we should fold in.
@@ -42,179 +61,10 @@ const BUSINESS_SUFFIXES = new Set([
  * Hebrew variants live alongside English so that "בזק" resolves to the
  * same canonical "bezeq" as "Bezeq International".
  */
-const ALIAS_GROUPS: Record<string, string[]> = {
-  // ── Tech / SaaS ──────────────────────────────────────────────
-  anthropic: ["anthropic", "anthropic pbc", "anthropic, pbc", "claude", "claude team",
-              "claude.com", "mail.anthropic.com"],
-  google: ["google", "google play", "google llc", "google cloud", "google cloud platform",
-           "google cloud platform firebase and apis", "google one", "google workspace",
-           "google ai", "youtube", "youtube premium", "gmail",
-           "יומן google", "google calendar", "payments.google.com", "pay.google.com"],
-  apple: ["apple", "apple services", "apple inc", "icloud", "itunes", "app store",
-          "apple.com", "email.apple.com", "apple pay"],
-  meta: ["meta", "facebook", "meta platforms", "meta for business",
-         "facebookmail", "instagram", "whatsapp", "facebook.com"],
-  microsoft: ["microsoft", "azure", "xbox", "microsoft 365", "office 365",
-              "microsoft.com"],
-  amazon: ["amazon", "amazon web services", "aws", "amazon.com",
-           "aws.amazon.com", "amazonaws.com", "amazon prime"],
-  github: ["github", "github inc", "github, inc", "github, inc.", "noreply.github.com",
-           "github copilot", "github sponsors"],
-  hostinger: ["hostinger", "hostinger us", "mailer.hostinger.com"],
-  adobe: ["adobe", "adobe creative cloud", "adobe acrobat", "adobe.com"],
-  vercel: ["vercel", "vercel inc", "vercel.com"],
-  render: ["render", "render.com"],
-  netlify: ["netlify", "netlify.com"],
-  cloudflare: ["cloudflare", "cloudflare inc", "cloudflare.com"],
-  openai: ["openai", "openai inc", "chatgpt", "openai ads", "openai ads gpt opco llc",
-           "openai ads gpt opco,llc via testflight", "gpt opco", "tm.openai.com",
-           "email.openai.com"],
-  stripe: ["stripe", "stripe inc", "stripe.com"],
-  paypal: ["paypal", "paypal europe", "paypal inc", "paypal pte", "paypal.co.il",
-           "paypal.com"],
-  shopify: ["shopify", "shopify international", "shopify inc", "shopify.com"],
-  notion: ["notion", "notion labs", "notion.so"],
-  canva: ["canva", "canva pro", "canva.com"],
-  wix: ["wix", "wix studio", "wix.com"],
-  squarespace: ["squarespace", "squarespace.com"],
-  godaddy: ["godaddy", "godaddy.com"],
-  namecheap: ["namecheap", "namecheap.com"],
-  dropbox: ["dropbox", "dropbox.com"],
-  spotify: ["spotify", "spotify ab", "spotify.com"],
-  netflix: ["netflix", "netflix.com"],
-  zoom: ["zoom", "zoom.us", "zoom video"],
-  linkedin: ["linkedin", "linkedin premium", "linkedin.com"],
-  digitalocean: ["digitalocean", "digital ocean", "digitalocean.com"],
-  heroku: ["heroku", "heroku.com"],
-
-  // ── E-commerce ──────────────────────────────────────────────
-  aliexpress: ["aliexpress", "aliexpress.seller", "ali express", "aliexpress.com",
-               "alibaba.com",  // intentionally NOT — see below
-              ].filter((v) => v !== "alibaba.com"),
-  alibaba: ["alibaba", "alibaba remind", "alibaba.com", "alibaba group"],
-  ebay: ["ebay", "ebay.com"],
-  etsy: ["etsy", "etsy.com"],
-  temu: ["temu", "temuemail", "temu.com"],
-  shein: ["shein", "shein.com"],
-
-  // ── Ride-sharing / delivery ──────────────────────────────────
-  uber: ["uber", "uber eats", "uber one", "uber technologies", "uber.com",
-         "receipts.uber.com"],
-  lyft: ["lyft", "lyftmail", "lyft inc", "marketing.lyftmail.com"],
-  gett: ["gett", "gett receipts", "gett receipt", "gett.com"],
-  bolt: ["bolt", "bolt eu", "bolt.eu"],
-  bird: ["bird", "bird rides", "bird.co"],
-
-  // ── Food delivery ────────────────────────────────────────────
-  wolt: ["wolt", "wolt israel", "wolt.com"],
-  doordash: ["doordash", "doordash inc", "doordash.com"],
-  deliveroo: ["deliveroo", "deliveroo.com"],
-  grubhub: ["grubhub", "grubhub.com"],
-  "10bis": ["10bis", "tenbis", "תן ביס", "10bis.co.il", "tenbis.co.il"],
-  cibus: ["cibus", "סיבוס", "cibus.co.il"],
-  lazada: ["lazada", "lazada customer care", "lazada thailand", "lazada singapore",
-           "support.lazada.co.th"],
-
-  // ── Travel / OTAs ────────────────────────────────────────────
-  booking: ["booking", "booking.com"],
-  airbnb: ["airbnb", "airbnb.com"],
-  expedia: ["expedia", "expedia.com"],
-  hotels: ["hotels", "hotels.com"],
-  agoda: ["agoda", "agoda.com"],
-  wizzair: ["wizzair", "wizz air", "wizzair.com"],
-  elal: ["elal", "el al", "el al matmid program", "el al matmid", "elal.co.il"],
-
-  // ── Hotel chains ─────────────────────────────────────────────
-  hilton: ["hilton", "hilton honors", "hilton.com"],
-  marriott: ["marriott", "marriott bonvoy", "marriott.com"],
-  ihg: ["ihg", "ihg.com"],
-  hyatt: ["hyatt", "hyatt.com"],
-  accor: ["accor", "accor.com"],
-
-  // ── Israeli telecom / utilities (English + Hebrew names map together) ──
-  bezeq: ["bezeq", "בזק", "bezeq international", "bezeq.co.il"],
-  cellcom: ["cellcom", "סלקום", "cellcom israel", "cellcom.co.il"],
-  partner: ["partner", "פרטנר", "partner communications", "partner.co.il"],
-  pelephone: ["pelephone", "פלאפון", "pelephone.co.il"],
-  hot: ["hot", "הוט", "hot.net.il"],
-  "electric-company": ["electric company", "חברת החשמל", "חברת חשמל", "electric.co.il"],
-  yad2: ["yad2", "יד2", "mail.yad2.co.il"],
-
-  // ── Transfer / misc ──────────────────────────────────────────
-  wetransfer: ["wetransfer", "we transfer", "wetransfer.com"],
-};
+const ALIAS_GROUPS: Record<string, string[]> = brandData.aliasGroups;
 
 // Display names (canonical key → user-visible string).
-const DISPLAY_NAMES: Record<string, string> = {
-  anthropic: "Anthropic",
-  google: "Google",
-  apple: "Apple",
-  meta: "Meta",
-  microsoft: "Microsoft",
-  amazon: "Amazon",
-  github: "GitHub",
-  hostinger: "Hostinger",
-  adobe: "Adobe",
-  vercel: "Vercel",
-  render: "Render",
-  netlify: "Netlify",
-  cloudflare: "Cloudflare",
-  openai: "OpenAI",
-  stripe: "Stripe",
-  paypal: "PayPal",
-  shopify: "Shopify",
-  notion: "Notion",
-  canva: "Canva",
-  wix: "Wix",
-  squarespace: "Squarespace",
-  godaddy: "GoDaddy",
-  namecheap: "Namecheap",
-  dropbox: "Dropbox",
-  spotify: "Spotify",
-  netflix: "Netflix",
-  zoom: "Zoom",
-  linkedin: "LinkedIn",
-  digitalocean: "DigitalOcean",
-  heroku: "Heroku",
-  aliexpress: "AliExpress",
-  alibaba: "Alibaba",
-  ebay: "eBay",
-  etsy: "Etsy",
-  temu: "Temu",
-  shein: "Shein",
-  uber: "Uber",
-  lyft: "Lyft",
-  gett: "Gett",
-  bolt: "Bolt",
-  bird: "Bird Rides",
-  wolt: "Wolt",
-  doordash: "DoorDash",
-  deliveroo: "Deliveroo",
-  grubhub: "GrubHub",
-  "10bis": "10bis",
-  cibus: "Cibus",
-  lazada: "Lazada",
-  booking: "Booking.com",
-  airbnb: "Airbnb",
-  expedia: "Expedia",
-  hotels: "Hotels.com",
-  agoda: "Agoda",
-  wizzair: "Wizz Air",
-  elal: "El Al",
-  hilton: "Hilton",
-  marriott: "Marriott",
-  ihg: "IHG",
-  hyatt: "Hyatt",
-  accor: "Accor",
-  bezeq: "Bezeq",
-  cellcom: "Cellcom",
-  partner: "Partner",
-  pelephone: "Pelephone",
-  hot: "HOT",
-  "electric-company": "Israel Electric",
-  yad2: "Yad2",
-  wetransfer: "WeTransfer",
-};
+const DISPLAY_NAMES: Record<string, string> = brandData.displayNames;
 
 // Reverse-lookup map: any alias variant (lowercased) → canonical key
 const ALIAS_TO_KEY: Map<string, string> = (() => {
@@ -229,11 +79,25 @@ const ALIAS_TO_KEY: Map<string, string> = (() => {
 })();
 
 /**
+ * Normalize Hebrew gershayim (״ U+05F4) / geresh (׳ U+05F3) and typographic
+ * quotes to plain ASCII quotes so 'בע"מ', 'בע״מ' and 'בע”מ' all hit the same
+ * suffix token, and quoted display names compare consistently (M10).
+ */
+function normalizeQuotes(s: string): string {
+  return s.replace(/[״”“]/g, '"').replace(/[׳’‘]/g, "'");
+}
+
+/**
  * Strip business suffixes from a name. "Anthropic, PBC" → "anthropic",
- * "Stripe Inc." → "stripe", "Meta Platforms" → "meta".
+ * "Stripe Inc." → "stripe", "Meta Platforms" → "meta", 'אקמי בע"מ' → 'אקמי'.
+ * Also drops the App Store's "via TestFlight" tail that PayPal/Apple receipts
+ * append to vendor names (M8).
  */
 function stripBusinessSuffix(name: string): string {
-  const lower = name.toLowerCase().trim();
+  const lower = normalizeQuotes(stripBidiMarks(name))
+    .toLowerCase()
+    .replace(/\s+via\s+testflight\s*$/i, "")
+    .trim();
   const tokens = lower
     .replace(/[,]/g, " ")
     .split(/\s+/)
@@ -267,7 +131,7 @@ function stripBidiMarks(s: string): string {
  */
 export function toCanonicalKey(raw: string | null | undefined): string | null {
   if (!raw) return null;
-  const lower = stripBidiMarks(String(raw)).toLowerCase().trim();
+  const lower = normalizeQuotes(stripBidiMarks(String(raw))).toLowerCase().trim();
   if (!lower) return null;
 
   // 1. Direct alias hit
@@ -285,12 +149,12 @@ export function toCanonicalKey(raw: string | null | undefined): string | null {
     return ALIAS_TO_KEY.get(noSpaces)!;
   }
 
-  // 4. First-word fallback: "Apple TV+" → "apple"
-  //    Only triggers if first word alone is a known canonical key.
-  const firstWord = stripped.split(/\s+/)[0];
-  if (firstWord && firstWord !== stripped && ALIAS_TO_KEY.has(firstWord)) {
-    return ALIAS_TO_KEY.get(firstWord)!;
-  }
+  // NOTE (M9): there is deliberately NO generic first-word fallback here.
+  // "Hot Bagels" must not merge into the HOT telecom key, nor "Partner
+  // Solutions" into Partner Communications, nor "Bolt Industries" into the
+  // Bolt ride-share. Legitimate multi-word brand variants ("Apple TV+",
+  // "Google Drive", "Uber Eats") are covered by explicit aliases in
+  // brand-data.json instead.
 
   return null;
 }
@@ -320,7 +184,11 @@ export function canonicalSupplierKey(input: {
       if (suffixStripped) {
         const aliased2 = toCanonicalKey(suffixStripped);
         if (aliased2) return aliased2;
-        return suffixStripped;
+        // Unknown brand: collapse whitespace so space variants dedupe into
+        // ONE deterministic key — "Beigel Bake" and "Beigelbake" must be the
+        // same supplier chip (M8). Deterministic (no first-seen state) so the
+        // persisted Invoice.supplierKey is stable across scans/backfills.
+        return suffixStripped.replace(/\s+/g, "");
       }
     }
   }

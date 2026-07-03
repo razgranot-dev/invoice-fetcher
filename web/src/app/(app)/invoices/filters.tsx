@@ -14,7 +14,9 @@ interface ScanOption {
 }
 
 interface InvoiceFiltersProps {
-  companies: Array<{ name: string; count: number }>;
+  /** `key` is the canonical supplier key (the ?company= query value the
+   *  server filters Invoice.supplierKey on); `name` is only the label. */
+  companies: Array<{ key: string; name: string; count: number }>;
   scans: ScanOption[];
 }
 
@@ -202,7 +204,7 @@ export function InvoiceFilters({ companies, scans }: InvoiceFiltersProps) {
               >
                 <option value="">All companies</option>
                 {companies.map((c) => (
-                  <option key={c.name} value={c.name}>
+                  <option key={c.key} value={c.key}>
                     {c.name} ({c.count})
                   </option>
                 ))}

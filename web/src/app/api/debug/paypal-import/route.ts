@@ -5,7 +5,7 @@ import { createScan, updateScanStatus } from "@/lib/data/scans";
 import { getActiveConnection } from "@/lib/data/connections";
 import { bulkCreateInvoices } from "@/lib/data/invoices";
 import { normalizeCurrency } from "@/lib/utils";
-import { canonicalSupplierKey, canonicalDisplayName } from "@/lib/supplier-canonical";
+import { canonicalSupplierKey, canonicalDisplayName, UNKNOWN_KEY } from "@/lib/supplier-canonical";
 import {
   extractDomain,
   extractCompany,
@@ -115,6 +115,8 @@ export async function POST(req: NextRequest) {
       sender: inv.sender ?? "",
       senderDomain,
       company: canonicalCompany,
+      // S1: same write-time canonical identity as the normal scan path.
+      supplierKey: canonicalKey || UNKNOWN_KEY,
       date: inv.date ? new Date(inv.date) : undefined,
       amount: inv.amount ?? undefined,
       currency: normalizeCurrency(inv.currency ?? "USD"),

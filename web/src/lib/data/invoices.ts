@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { canonicalSupplierKey, UNKNOWN_KEY } from "@/lib/supplier-canonical";
 
 export async function getInvoices(
   organizationId: string,
@@ -31,7 +32,13 @@ export async function getInvoices(
     where.classificationTier = filters.tier;
   }
   if (filters?.company) {
-    where.company = filters.company;
+    // The company facet filters by CANONICAL supplier key (M14) — the same
+    // identity every other consumer uses — so "AliExpress" matches legacy
+    // variants ("AliExpress.seller") too. Accepts either a canonical key or
+    // a display name; both resolve to the same key.
+    where.supplierKey =
+      canonicalSupplierKey({ company: filters.company }) ||
+      filters.company.toLowerCase();
   }
 
   // Report inclusion filter
@@ -68,8 +75,53 @@ export async function updateReportStatus(
 ) {
   return db.invoice.updateMany({
     where: { id: { in: invoiceIds }, organizationId },
-    data: { reportStatus },
+    // reportStatusManual marks this row as a deliberate user decision —
+    // re-scans and the supplier-exclusion sweep must never override it
+    // (see buildReassociationUpdates below).
+    data: { reportStatus, reportStatusManual: true },
   });
+}
+
+/**
+ * Build the updateMany argument pairs that re-associate a chunk of scanned
+ * gmailMessageIds onto a new scan. Split in two so rows the user manually
+ * included/excluded keep their decision on "Run again":
+ *   • non-manual rows re-associate AND receive the tier-default reportStatus
+ *   • manual rows only re-associate (scanId) — their reportStatus is theirs
+ *
+ * Pure — unit tested in web/src/lib/__tests__/scan-reassociation.test.ts.
+ */
+export function buildReassociationUpdates(
+  organizationId: string,
+  scanId: string,
+  gmailMessageIds: string[],
+  reportStatus: "INCLUDED" | "EXCLUDED"
+): Array<{
+  where: {
+    organizationId: string;
+    gmailMessageId: { in: string[] };
+    reportStatusManual: boolean;
+  };
+  data: { scanId: string; reportStatus?: "INCLUDED" | "EXCLUDED" };
+}> {
+  return [
+    {
+      where: {
+        organizationId,
+        gmailMessageId: { in: gmailMessageIds },
+        reportStatusManual: false,
+      },
+      data: { scanId, reportStatus },
+    },
+    {
+      where: {
+        organizationId,
+        gmailMessageId: { in: gmailMessageIds },
+        reportStatusManual: true,
+      },
+      data: { scanId },
+    },
+  ];
 }
 
 export async function getInvoiceStats(organizationId: string) {
@@ -115,19 +167,60 @@ export async function getRecentInvoices(organizationId: string, limit = 10) {
 }
 
 /**
- * Uncapped (company, senderDomain) counts across ALL of an org's invoices.
- * The supplier panel + Companies filter MUST be derived from this, not from the
- * capped invoice list — otherwise an org with >500 invoices loses every
- * supplier whose rows fall outside the most-recent 500 (the "missing suppliers"
- * regression). Grouped, so it returns one row per distinct (company,domain),
- * not every invoice.
+ * Uncapped canonical-supplier-key counts, optionally scoped to the current
+ * view's DB-level facets (scan / tier / report status) so chip counts match
+ * the list the user is looking at (M14).
+ *
+ * The supplier panel + Companies filter MUST be derived from this, not from
+ * the capped invoice list — otherwise an org with >500 invoices loses every
+ * supplier whose rows fall outside the visible window (the "missing
+ * suppliers" regression).
+ *
+ * Primary source is the persisted Invoice.supplierKey column (S1, indexed on
+ * [organizationId, supplierKey]); rows not yet backfilled fall back to
+ * computing canonicalSupplierKey from (company, senderDomain). Empty keys
+ * bucket under UNKNOWN_KEY so unattributable rows stay visible/excludable.
  */
-export async function getSupplierBrandCounts(organizationId: string) {
-  return db.invoice.groupBy({
-    by: ["company", "senderDomain"],
-    where: { organizationId },
-    _count: true,
-  });
+export async function getSupplierKeyCounts(
+  organizationId: string,
+  scope?: { scanId?: string; tier?: string; reportStatus?: string }
+): Promise<Map<string, number>> {
+  const where: any = { organizationId };
+  if (scope?.scanId) where.scanId = scope.scanId;
+  if (scope?.tier) where.classificationTier = scope.tier;
+  if (scope?.reportStatus === "INCLUDED" || scope?.reportStatus === "EXCLUDED") {
+    where.reportStatus = scope.reportStatus;
+  }
+
+  const [keyed, legacy] = await Promise.all([
+    db.invoice.groupBy({
+      by: ["supplierKey"],
+      where: { ...where, supplierKey: { not: null } },
+      _count: true,
+    }),
+    // Transition fallback for rows created before the supplierKey column /
+    // not yet touched by scripts/backfill-supplier-key.ts.
+    db.invoice.groupBy({
+      by: ["company", "senderDomain"],
+      where: { ...where, supplierKey: null },
+      _count: true,
+    }),
+  ]);
+
+  const counts = new Map<string, number>();
+  const add = (key: string, n: number) => counts.set(key, (counts.get(key) ?? 0) + n);
+  for (const row of keyed) {
+    const n = typeof row._count === "number" ? row._count : 1;
+    add(row.supplierKey || UNKNOWN_KEY, n);
+  }
+  for (const row of legacy) {
+    const n = typeof row._count === "number" ? row._count : 1;
+    const key =
+      canonicalSupplierKey({ company: row.company, senderDomain: row.senderDomain }) ||
+      UNKNOWN_KEY;
+    add(key, n);
+  }
+  return counts;
 }
 
 export async function getCompanyList(organizationId: string) {
@@ -192,6 +285,9 @@ export async function bulkCreateInvoices(
     attachmentPath?: string;
     notes?: string;
     reportStatus?: "INCLUDED" | "EXCLUDED";
+    // Canonical supplier identity — MUST be produced by canonicalSupplierKey
+    // (the single resolver); every read-side consumer groups/filters on it.
+    supplierKey?: string;
   }>
 ) {
   return db.invoice.createMany({

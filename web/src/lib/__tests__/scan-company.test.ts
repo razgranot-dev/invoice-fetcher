@@ -4,6 +4,9 @@ import {
   extractCompany,
   extractVendorFromSubject,
   normalizeCompanyName,
+  isForwarded,
+  stripForwardPrefix,
+  extractForwardedOriginalSender,
 } from "../scan-company";
 
 /**
@@ -120,6 +123,107 @@ describe("extractCompany — noise display names fall through to the domain bran
   });
   it("a real display name is still used", () => {
     expect(extractCompany('"Higgsfield AI" <team@higgsfield.ai>')).toContain("Higgsfield");
+  });
+});
+
+describe("extractVendorFromSubject — subject-like capture guards (M8)", () => {
+  it("truncates the PayPal capture at 'for' free text", () => {
+    expect(
+      extractVendorFromSubject(
+        "You sent a payment of $4.00 USD to 刘云 for Detailed Payment Request 0085",
+        "PayPal <service@paypal.com>"
+      )
+    ).toBe("刘云");
+  });
+  it("rejects captures with long digit runs (order/request numbers)", () => {
+    expect(
+      extractVendorFromSubject(
+        "Receipt for your payment to order number 000123456789",
+        "service@paypal.com"
+      )
+    ).toBeUndefined();
+  });
+  it("rejects sentence-length captures (> 5 tokens)", () => {
+    expect(
+      extractVendorFromSubject(
+        "Receipt for your payment to the awesome shop that ships worldwide always",
+        "service@paypal.com"
+      )
+    ).toBeUndefined();
+  });
+  it("still extracts normal multi-word vendors", () => {
+    expect(
+      extractVendorFromSubject(
+        "Receipt for your payment to Beigel Bake",
+        "service@paypal.com"
+      )
+    ).toBe("Beigel Bake");
+  });
+  it("truncates at commas (legal-suffix tails)", () => {
+    expect(
+      extractVendorFromSubject(
+        "Your receipt from Anthropic, PBC",
+        "receipts@stripe.com"
+      )
+    ).toBe("Anthropic");
+  });
+});
+
+describe("forwarded-email attribution (M11)", () => {
+  it("detects English and Hebrew forward prefixes", () => {
+    expect(isForwarded("Fwd: Your receipt from Anthropic")).toBe(true);
+    expect(isForwarded("FW: invoice")).toBe(true);
+    expect(isForwarded("הועבר: קבלה")).toBe(true);
+    expect(isForwarded("Your receipt from Anthropic")).toBe(false);
+    expect(isForwarded(undefined)).toBe(false);
+  });
+
+  it("strips stacked forward prefixes from the subject", () => {
+    expect(stripForwardPrefix("Fwd: Fwd: Your receipt")).toBe("Your receipt");
+    expect(stripForwardPrefix("הועבר: קבלה על תשלום")).toBe("קבלה על תשלום");
+  });
+
+  it("extracts the original sender from a plain-text forwarded block", () => {
+    const body =
+      "---------- Forwarded message ---------\n" +
+      "From: Anthropic <invoicing@anthropic.com>\n" +
+      "Date: Tue, Jun 30, 2026\n" +
+      "Subject: Your receipt from Anthropic, PBC\n";
+    expect(extractForwardedOriginalSender(body, null)).toBe(
+      "Anthropic <invoicing@anthropic.com>"
+    );
+  });
+
+  it("extracts the original sender from Gmail-style forwarded HTML", () => {
+    const html =
+      "<div>---------- Forwarded message ---------<br>" +
+      'From: <b>Anthropic</b> &lt;<a href="mailto:invoicing@anthropic.com">invoicing@anthropic.com</a>&gt;<br>' +
+      "Date: Tue, Jun 30, 2026<br></div>";
+    const sender = extractForwardedOriginalSender(null, html);
+    expect(sender).toBeDefined();
+    expect(extractDomain(sender)).toBe("anthropic.com");
+    expect(extractCompany(sender)).toContain("Anthropic");
+  });
+
+  it("extracts the original sender from a Hebrew מאת: header", () => {
+    const body = "הודעה שהועברה\nמאת: בזק <billing@bezeq.co.il>\nתאריך: 30.6.2026\n";
+    const sender = extractForwardedOriginalSender(body, null);
+    expect(sender).toBeDefined();
+    expect(extractDomain(sender)).toBe("bezeq.co.il");
+  });
+
+  it("returns undefined when no embedded From header carries an address", () => {
+    expect(extractForwardedOriginalSender("From: my accountant\n", null)).toBeUndefined();
+    expect(extractForwardedOriginalSender("no headers here", null)).toBeUndefined();
+    expect(extractForwardedOriginalSender(null, null)).toBeUndefined();
+  });
+
+  it("end-to-end: forwarded receipt resolves to the ORIGINAL brand, not the forwarder", () => {
+    // Mirrors the scans-route wiring: effectiveSender feeds extractCompany.
+    const body = "From: Anthropic <invoicing@anthropic.com>\n";
+    const forwarder = "Accountant <acc@gmail.com>";
+    const effectiveSender = extractForwardedOriginalSender(body, null) ?? forwarder;
+    expect(extractCompany(effectiveSender)).toBe("Anthropic");
   });
 });
 

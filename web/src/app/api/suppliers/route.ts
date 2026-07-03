@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
-import { toggleSupplierRelevance, getSuppliers, getDomainsForBrand } from "@/lib/data/suppliers";
+import { toggleSupplierRelevance, getSuppliers } from "@/lib/data/suppliers";
 import { db } from "@/lib/db";
-import { cleanCompanyName } from "@/lib/utils";
+import { canonicalSupplierKey, UNKNOWN_KEY } from "@/lib/supplier-canonical";
 
 export async function GET() {
   const session = await auth();
@@ -50,56 +50,45 @@ export async function PATCH(req: NextRequest) {
   // 1. Update the supplier record
   const supplier = await toggleSupplierRelevance(orgId, name, isRelevant);
 
-  // 2. Cascade to all invoices matching this brand using company-first logic.
-  //    company field takes priority over senderDomain for brand identification,
-  //    so toggling "meta" only affects Meta invoices — not other PayPal vendors.
-  //
-  //    Performance: Uses two targeted updateMany calls instead of fetching all
-  //    invoices into memory. The first handles invoices whose company field
-  //    matches the brand; the second handles invoices with no company whose
-  //    senderDomain normalizes to the brand (requires a small groupBy lookup).
+  // 2. Cascade to all invoices matching this brand. Supplier names in the DB
+  //    are canonical keys and every invoice persists the SAME key in
+  //    supplierKey (written exclusively by canonicalSupplierKey at scan
+  //    time — S1), so the cascade is one indexed updateMany instead of the
+  //    previous O(all-org-invoices) in-memory scan. The "unknown" chip works
+  //    too: unattributable rows persist supplierKey="unknown" (M12).
   const nameLower = name.toLowerCase();
   const newStatus = isRelevant ? "INCLUDED" : "EXCLUDED";
 
-  // Find all company variants that normalize to this brand (e.g., "gett reciept" → "gett").
-  // Necessary because the DB may contain noisy display names from older scans.
-  const companyVariants = await db.invoice.groupBy({
-    by: ["company"],
-    where: { organizationId: orgId, company: { not: null } },
+  let invoicesUpdated = 0;
+  const direct = await db.invoice.updateMany({
+    where: { organizationId: orgId, supplierKey: nameLower },
+    data: { reportStatus: newStatus as any },
   });
-  const matchingCompanies = companyVariants
-    .map((r) => r.company!)
-    .filter((c) => cleanCompanyName(c.trim().toLowerCase()) === nameLower);
+  invoicesUpdated += direct.count;
 
-  let companyUpdateCount = 0;
-  if (matchingCompanies.length > 0) {
-    const companyResult = await db.invoice.updateMany({
-      where: {
-        organizationId: orgId,
-        company: { in: matchingCompanies },
-      },
+  // Transition fallback: rows created before the supplierKey column existed
+  // (and not yet backfilled) still resolve through the same canonical
+  // resolver in memory. Post-backfill this findMany returns zero rows.
+  const legacy = await db.invoice.findMany({
+    where: { organizationId: orgId, supplierKey: null },
+    select: { id: true, company: true, senderDomain: true },
+  });
+  const legacyIds = legacy
+    .filter(
+      (inv) =>
+        (canonicalSupplierKey({
+          company: inv.company,
+          senderDomain: inv.senderDomain,
+        }) || UNKNOWN_KEY) === nameLower
+    )
+    .map((inv) => inv.id);
+  for (let i = 0; i < legacyIds.length; i += 500) {
+    const result = await db.invoice.updateMany({
+      where: { id: { in: legacyIds.slice(i, i + 500) } },
       data: { reportStatus: newStatus as any },
     });
-    companyUpdateCount = companyResult.count;
+    invoicesUpdated += result.count;
   }
-
-  // For invoices without a company field, find which senderDomains
-  // normalize to this brand, then update those targeted domains.
-  const domainsForBrand = await getDomainsForBrand(orgId, nameLower);
-  let domainUpdateCount = 0;
-  if (domainsForBrand.length > 0) {
-    const domainResult = await db.invoice.updateMany({
-      where: {
-        organizationId: orgId,
-        company: null,
-        senderDomain: { in: domainsForBrand },
-      },
-      data: { reportStatus: newStatus as any },
-    });
-    domainUpdateCount = domainResult.count;
-  }
-
-  const invoicesUpdated = companyUpdateCount + domainUpdateCount;
 
   // Invalidate the cached /invoices page so navigation back shows fresh data
   revalidatePath("/invoices");

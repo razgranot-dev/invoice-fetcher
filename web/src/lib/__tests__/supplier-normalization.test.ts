@@ -9,6 +9,8 @@
  * tested without importing Next.js server modules.
  */
 
+import { describe, test, expect } from "vitest";
+
 // =============================================================================
 // 1. DUPLICATED FUNCTIONS (from source files, for isolated testing)
 // =============================================================================

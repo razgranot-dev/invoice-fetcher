@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import brandData from "./brand-data.json";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -65,29 +66,16 @@ export function initials(name: string): string {
  *   mail.google.com      → Google
  *   some-company.co.il   → Some Company
  */
-const NOISE_SUBDOMAINS = new Set([
-  "info", "billing", "invoices", "invoice", "mail", "email", "e-mail",
-  "noreply", "no-reply", "donotreply", "support", "help", "contact",
-  "notifications", "notification", "notify", "alerts", "alert",
-  "accounts", "account", "payments", "payment", "orders", "order",
-  "receipts", "receipt", "reciept", "reciepts", "service", "services", "mailer", "news",
-  "newsletter", "updates", "www", "smtp", "mx", "bounce", "postmaster",
-  // Hotel loyalty program suffixes — prevent "Marriott Bonvoy" vs "Marriott" duplicates
-  "bonvoy", "honors",
-]);
+// Noise words, brand aliases, and compound TLDs are shared with the scan
+// pipeline (scan-company.ts), the export dispatcher (worker.ts), and the
+// Python worker (core/brand_data.py) via the single source of truth
+// web/src/lib/brand-data.json.
+export const NOISE_SUBDOMAINS: ReadonlySet<string> = new Set(brandData.noiseWords);
 
 /** Canonical brand aliases — merge related domains under one supplier name */
-const BRAND_ALIASES: Record<string, string> = {
-  "facebookmail": "meta",
-  "facebook": "meta",
-  "instagram": "meta",
-};
+const BRAND_ALIASES: Record<string, string> = brandData.domainBrandAliases;
 
-const COMPOUND_TLDS = new Set([
-  "co.il", "co.uk", "co.jp", "co.kr", "co.in", "co.za", "co.nz",
-  "com.au", "com.br", "com.mx", "com.ar", "com.tw", "com.sg",
-  "org.uk", "org.il", "net.il", "ac.il", "ac.uk", "gov.il",
-]);
+export const COMPOUND_TLDS: readonly string[] = brandData.compoundTlds;
 
 /**
  * Normalize a sender domain/email to a lowercase brand key.
