@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { requireOrganization } from "@/lib/session";
 import { getDashboardData } from "@/lib/data/dashboard";
 import { formatCurrency } from "@/lib/utils";
+import { formatCurrencyCompact } from "@/lib/format";
 import Link from "next/link";
 
 const tierBadge: Record<string, { label: string; variant: "secondary" | "default" | "accent" | "outline" }> = {
@@ -70,7 +71,8 @@ export default async function DashboardPage() {
             />
             <StatCard
               label="Total Amount"
-              value={formatCurrency(stats.totalAmount)}
+              value={formatCurrencyCompact(stats.totalAmount)}
+              valueTitle={formatCurrency(stats.totalAmount)}
               subtitle="Confirmed + Likely"
               icon={Receipt}
               accentColor="primary"

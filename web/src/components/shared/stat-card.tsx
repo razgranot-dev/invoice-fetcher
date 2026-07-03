@@ -4,6 +4,8 @@ import type { LucideIcon } from "lucide-react";
 interface StatCardProps {
   label: string;
   value: string | number;
+  /** Full/untruncated value shown as a native tooltip (title attr) on the value — use when `value` is compacted (e.g. ₪1.2M). */
+  valueTitle?: string;
   subtitle?: string;
   icon: LucideIcon;
   trend?: { value: number; label: string };
@@ -37,6 +39,7 @@ const accentMap = {
 export function StatCard({
   label,
   value,
+  valueTitle,
   subtitle,
   icon: Icon,
   trend,
@@ -53,19 +56,24 @@ export function StatCard({
         className
       )}
     >
-      <div className="relative flex items-start justify-between">
-        <div className="space-y-2.5">
+      <div className="relative flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-2.5">
           <p className="text-[11px] font-bold text-muted-foreground tracking-[0.15em] uppercase">
             {label}
           </p>
-          <p className="text-4xl font-black tracking-tight text-foreground">{value}</p>
+          <p
+            className="text-4xl font-black tracking-tight text-foreground break-words"
+            title={valueTitle}
+          >
+            {value}
+          </p>
           {subtitle && (
             <p className="text-xs text-muted-foreground font-medium">{subtitle}</p>
           )}
         </div>
         <div
           className={cn(
-            "flex h-12 w-12 items-center justify-center rounded-2xl border",
+            "flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border",
             accent.icon
           )}
         >

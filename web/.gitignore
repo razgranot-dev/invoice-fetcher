@@ -7,3 +7,5 @@ node_modules/
 next-env.d.ts
 setup.ps1
 /exports/
+
+.vercel

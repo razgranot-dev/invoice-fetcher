@@ -195,14 +195,14 @@ Gmail box **unchecked** or the user didn't re-consent. To recover:
 
 ### 5. Local QA scripts
 
-In `scripts/` (run from repo root):
+In `scripts/diagnostics/` (run from repo root):
 
 | Script | Purpose |
 |---|---|
-| `node scripts/diag_db.mjs` | Test Neon connection, list tables |
-| `node scripts/diag_state.mjs` | Dump last 10 scans + Gmail connection status (no secrets) |
-| `node scripts/diag_oauth.mjs` + `python scripts/diag_oauth.py` | Reproduce the OAuth refresh path against live Google |
-| `python scripts/diag_oauth_inspect.py` | Direct POST to Google's token endpoint to see exact granted scopes |
+| `node scripts/diagnostics/diag_db.mjs` | Test Neon connection, list tables |
+| `node scripts/diagnostics/diag_state.mjs` | Dump last 10 scans + Gmail connection status (no secrets) |
+| `node scripts/diagnostics/diag_oauth.mjs` + `python scripts/diagnostics/diag_oauth.py` | Reproduce the OAuth refresh path against live Google |
+| `python scripts/diagnostics/diag_oauth_inspect.py` | Direct POST to Google's token endpoint to see exact granted scopes |
 
 ---
 

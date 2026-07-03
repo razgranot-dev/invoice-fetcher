@@ -1,5 +1,19 @@
 import { db } from "@/lib/db";
 
+/**
+ * Where clause for the dashboard "Recent Invoices" card.
+ *
+ * Junk-tier rows (not_invoice) must never surface on the dashboard — they
+ * are noise the classifier already rejected. Exported as a pure helper so
+ * tests can pin the exclusion without a database.
+ */
+export function recentInvoicesWhere(organizationId: string) {
+  return {
+    organizationId,
+    classificationTier: { not: "not_invoice" },
+  };
+}
+
 export async function getDashboardData(organizationId: string) {
   const [
     totalInvoices,
@@ -33,9 +47,9 @@ export async function getDashboardData(organizationId: string) {
       where: { organizationId, company: { not: null } },
     }),
 
-    // Recent invoices
+    // Recent invoices — never show not_invoice junk on the dashboard
     db.invoice.findMany({
-      where: { organizationId },
+      where: recentInvoicesWhere(organizationId),
       orderBy: { createdAt: "desc" },
       take: 5,
       select: {
@@ -70,11 +84,14 @@ export async function getDashboardData(organizationId: string) {
       where: { organizationId, isActive: true },
     }),
 
-    // Total amount (confirmed + likely invoices)
+    // Total amount — only invoices that are actually IN the report
+    // (confirmed/likely AND not excluded by the user). Summing excluded rows
+    // overstated the headline figure.
     db.invoice.aggregate({
       where: {
         organizationId,
         classificationTier: { in: ["confirmed_invoice", "likely_invoice"] },
+        reportStatus: "INCLUDED",
         amount: { not: null },
       },
       _sum: { amount: true },
