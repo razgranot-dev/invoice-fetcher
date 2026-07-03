@@ -154,11 +154,15 @@ model Scan {
   startedAt        DateTime?
   completedAt      DateTime?
   createdAt        DateTime   @default(now())
+  // Auto-touched on every progress write — stuck-scan recovery keys on this
+  updatedAt        DateTime   @default(now()) @updatedAt
 
   organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   connection   GmailConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   invoices     Invoice[]
 
+  // NOTE: migration also creates a partial unique index "one_active_scan_per_org"
+  // ON scans(organizationId) WHERE status IN ('PENDING','RUNNING') — not expressible in Prisma DSL.
   @@index([organizationId])
   @@index([connectionId])
   @@map("scans")
@@ -200,6 +204,10 @@ model Invoice {
   attachmentPath       String?
   notes                String?
   reportStatus         ReportInclusion @default(INCLUDED)
+  // True once the user manually set reportStatus — re-scans and sweeps must not override
+  reportStatusManual   Boolean @default(false)
+  // Canonical supplier identity (canonicalSupplierKey) computed at write time — single resolver
+  supplierKey          String?
   createdAt            DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -208,6 +216,7 @@ model Invoice {
   @@unique([organizationId, gmailMessageId])
   @@index([organizationId, classificationTier])
   @@index([organizationId, company])
+  @@index([organizationId, supplierKey])
   @@index([organizationId, date])
   @@index([organizationId, reportStatus])
   @@index([organizationId, senderDomain])
