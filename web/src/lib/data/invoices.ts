@@ -32,13 +32,18 @@ export async function getInvoices(
     where.classificationTier = filters.tier;
   }
   if (filters?.company) {
-    // The company facet filters by CANONICAL supplier key (M14) — the same
-    // identity every other consumer uses — so "AliExpress" matches legacy
-    // variants ("AliExpress.seller") too. Accepts either a canonical key or
-    // a display name; both resolve to the same key.
-    where.supplierKey =
-      canonicalSupplierKey({ company: filters.company }) ||
-      filters.company.toLowerCase();
+    // The company facet matches the persisted canonical supplierKey DIRECTLY.
+    // filters.company is ALREADY that canonical key — the Companies dropdown
+    // (filters.tsx: <option value={c.key}>) and the CSV/Word export routes
+    // (exports/route.ts + invoices/export/route.ts) pass the STORED key
+    // straight through. It must NOT be re-canonicalized here:
+    // canonicalSupplierKey is not a fixed point on already-canonical keys —
+    // running it on a stored domain-derived hyphenated key collapses it
+    // ('my-shop' → 'myshop', 'acme-corp' → 'acme', because cleanCompanyName
+    // splits on '-' and 'corp'/'co' are stripped as business suffixes), which
+    // filters to zero/wrong rows and silently corrupts the filtered CSV/Word
+    // export (M14). Match the key verbatim.
+    where.supplierKey = filters.company.toLowerCase();
   }
 
   // Report inclusion filter

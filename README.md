@@ -206,6 +206,50 @@ In `scripts/diagnostics/` (run from repo root):
 
 ---
 
+## Deploying schema changes (SaaS DB)
+
+The SaaS app has **no Prisma migration history** — it uses `prisma db push`.
+The Vercel build command runs only `prisma generate` (see `web/package.json`
+`build` + `postinstall`), which regenerates the client **but never touches the
+database**. So a fresh deploy against an un-synced database throws runtime 500s
+(`P2022 – column does not exist`, e.g. `Invoice.supplierKey`,
+`Invoice.reportStatusManual`, `Scan.updatedAt`) and cannot enforce the
+single-active-scan dedupe.
+
+Before (or as part of) each deploy, run **both** commands from `web/`, pointed
+at the target `DATABASE_URL`:
+
+```bash
+cd web
+npm run db:push        # syncs the columns declared in prisma/schema.prisma
+npm run db:bootstrap   # applies prisma/sql/qa53_bootstrap.sql (see below)
+```
+
+Both are safe to re-run — `db:push` is a no-op when the schema already matches,
+and `qa53_bootstrap.sql` is fully idempotent (`IF NOT EXISTS` on every
+statement), so running it against the existing Neon prod DB changes nothing.
+
+### Why `db:bootstrap` is required in addition to `db:push`
+
+`qa53_bootstrap.sql` applies the one thing `db:push` cannot:
+
+- The **partial unique index** `one_active_scan_per_org ON scans(organizationId)
+  WHERE status IN ('PENDING','RUNNING')` — this is **not expressible in the
+  Prisma DSL** (`schema.prisma` only documents it in a comment on the `Scan`
+  model), so `db push` never creates it. It backs the atomic
+  "one active scan per org" dedupe.
+
+The same file also re-declares the three columns above with
+`ADD COLUMN IF NOT EXISTS` as a belt-and-suspenders guard for environments where
+`db:push` has not yet run — but **`prisma/schema.prisma` remains the canonical
+source** of those columns.
+
+> The Vercel build command is intentionally **not** changed to run `db push`
+> automatically — pushing schema on every build is risky for a shared DB. Run
+> the two commands above as a manual/CI step against the target database instead.
+
+---
+
 ## מבנה הפרויקט
 
 ```

@@ -321,6 +321,29 @@ export async function POST(req: NextRequest) {
         return "EXCLUDED";
       }
 
+      // Actual persisted report-status counts for THIS scan, read straight
+      // back from the DB after re-association (FIX 4). The finish summary and
+      // the stored scan.invoiceCount MUST reflect what is actually persisted —
+      // including the H4 manual overrides that buildReassociationUpdates
+      // preserves — not invoiceRows' fresh per-tier defaults. Example: a
+      // confirmed_invoice the user manually excluded has tier-default INCLUDED
+      // but lives as EXCLUDED in the DB; counting the tier default would make
+      // the summary/invoiceCount disagree with getScanById. Mirrors
+      // getScanById's reducer so both numbers always match.
+      async function persistedReportCounts(): Promise<{ included: number; excluded: number }> {
+        const statusCounts = await db.invoice.groupBy({
+          by: ["reportStatus"],
+          where: { organizationId: orgId, scanId: scan.id },
+          _count: true,
+        });
+        const counts = { included: 0, excluded: 0 };
+        for (const row of statusCounts) {
+          if (row.reportStatus === "INCLUDED") counts.included = row._count;
+          else if (row.reportStatus === "EXCLUDED") counts.excluded = row._count;
+        }
+        return counts;
+      }
+
       const invoiceRows = persistable.map((inv) => {
         const senderDomain = extractDomain(inv.sender);
         // Forwarded receipts (M11): "Fwd: Your receipt from Anthropic" arrives
@@ -443,8 +466,10 @@ export async function POST(req: NextRequest) {
             },
             {} as Record<string, number>
           );
-          const earlyIncluded = invoiceRows.filter((r) => r.reportStatus === "INCLUDED").length;
-          const earlyExcluded = invoiceRows.filter((r) => r.reportStatus === "EXCLUDED").length;
+          // Read the counts back from the persisted rows (FIX 4) — see
+          // persistedReportCounts above. Runs after the re-association loop,
+          // so H4-preserved manual overrides are already in the DB.
+          const { included: earlyIncluded, excluded: earlyExcluded } = await persistedReportCounts();
           const earlyParts = [
             `Scanned ${result.total_messages}`,
             `${earlyIncluded} in report`,
@@ -578,8 +603,10 @@ export async function POST(req: NextRequest) {
         },
         {} as Record<string, number>
       );
-      const includedCount = invoiceRows.filter((r) => r.reportStatus === "INCLUDED").length;
-      const excludedCount = invoiceRows.filter((r) => r.reportStatus === "EXCLUDED").length;
+      // Counts come from the ACTUAL persisted reportStatus (FIX 4), not
+      // invoiceRows' per-tier defaults, so H4 manual include/exclude overrides
+      // are honoured and this summary agrees with getScanById.
+      const { included: includedCount, excluded: excludedCount } = await persistedReportCounts();
       const summaryParts = [
         `Scanned ${result.total_messages}`,
         `${includedCount} in report`,

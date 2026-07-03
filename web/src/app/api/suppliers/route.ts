@@ -61,7 +61,15 @@ export async function PATCH(req: NextRequest) {
 
   let invoicesUpdated = 0;
   const direct = await db.invoice.updateMany({
-    where: { organizationId: orgId, supplierKey: nameLower },
+    where: {
+      organizationId: orgId,
+      supplierKey: nameLower,
+      // A row-level manual include/exclude beats this brand-level toggle — the
+      // user explicitly decided that invoice. Matches the scan sweep guard in
+      // scans/route.ts ("row-level manual beats brand-level"); without it,
+      // toggling a supplier silently reverts a manual per-invoice decision.
+      reportStatusManual: false,
+    },
     data: { reportStatus: newStatus as any },
   });
   invoicesUpdated += direct.count;
@@ -84,7 +92,12 @@ export async function PATCH(req: NextRequest) {
     .map((inv) => inv.id);
   for (let i = 0; i < legacyIds.length; i += 500) {
     const result = await db.invoice.updateMany({
-      where: { id: { in: legacyIds.slice(i, i + 500) } },
+      where: {
+        id: { in: legacyIds.slice(i, i + 500) },
+        // Same manual guard as the primary cascade above — a legacy row the
+        // user manually included/excluded keeps its decision on a brand toggle.
+        reportStatusManual: false,
+      },
       data: { reportStatus: newStatus as any },
     });
     invoicesUpdated += result.count;

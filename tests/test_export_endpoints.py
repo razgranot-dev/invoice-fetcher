@@ -388,6 +388,47 @@ class TestDiskBackedExportCache:
         assert resp.body == b"ZIPBYTES"
         assert "shots.zip" in resp.headers["content-disposition"]
 
+    @staticmethod
+    def _burst_ids(n: int) -> list[str]:
+        """Distinct CUID-shaped ids for a post-restart download burst."""
+        return [f"cburst{i:018d}" for i in range(n)]
+
+    def test_disk_repopulation_burst_respects_entry_cap(self, tmp_path, monkeypatch):
+        """FIX 6: after a worker restart, a burst of downloads of many pending
+        exports repopulates memory through _cache_get's disk hit. That path must
+        enforce the SAME entry cap as _cache_put — a bare setdefault would let
+        _FILE_CACHE grow one entry per download, unbounded → OOM on Render."""
+        _isolate_cache(tmp_path, monkeypatch)
+        monkeypatch.setattr(wm, "_CACHE_MAX_ENTRIES", 5)
+        ids = self._burst_ids(12)
+        for jid in ids:
+            wm._cache_put(jid, jid.encode(), {"filename": f"{jid}.zip"})
+        wm._FILE_CACHE.clear()  # simulated restart — memory wiped, disk intact
+        for jid in ids:
+            entry = wm._cache_get(jid)
+            # Bytes are still served correctly for the requested job.
+            assert entry is not None and entry["data"] == jid.encode()
+            # Memory never grows past the cap, even mid-burst.
+            assert len(wm._FILE_CACHE) <= wm._CACHE_MAX_ENTRIES
+        assert len(wm._FILE_CACHE) <= wm._CACHE_MAX_ENTRIES
+
+    def test_disk_repopulation_burst_respects_byte_cap(self, tmp_path, monkeypatch):
+        """FIX 6: the disk-hit repopulation must also honor the total-byte cap,
+        not just the entry count — large exports would blow the byte budget."""
+        _isolate_cache(tmp_path, monkeypatch)
+        monkeypatch.setattr(wm, "_CACHE_MAX_ENTRIES", 1000)  # let bytes dominate
+        monkeypatch.setattr(wm, "_CACHE_MAX_BYTES", 2500)
+        ids = self._burst_ids(10)
+        payload = b"X" * 1000
+        for jid in ids:
+            wm._cache_put(jid, payload, {"filename": f"{jid}.zip"})
+        wm._FILE_CACHE.clear()
+        for jid in ids:
+            entry = wm._cache_get(jid)
+            assert entry is not None and entry["data"] == payload  # bytes served
+            assert wm._cache_total_bytes() <= wm._CACHE_MAX_BYTES  # bounded
+        assert wm._cache_total_bytes() <= wm._CACHE_MAX_BYTES
+
 
 class TestWorkerAuthMiddleware:
     @staticmethod

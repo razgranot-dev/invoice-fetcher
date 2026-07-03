@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "db:bootstrap": "prisma db execute --file prisma/sql/qa53_bootstrap.sql --schema prisma/schema.prisma",
     "db:studio": "prisma studio"
   },
   "dependencies": {

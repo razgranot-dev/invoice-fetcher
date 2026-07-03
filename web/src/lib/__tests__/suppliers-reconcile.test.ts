@@ -137,6 +137,46 @@ describe("reconcileSuppliers preserves user exclusions (M13)", () => {
     expect(mocks.supplierDeleteMany).not.toHaveBeenCalled();
   });
 
+  test("stale exclusion is NOT migrated onto a hyphen-collapsed key that has no invoices (FIX)", async () => {
+    // 'acme-corp' canonicalizes to 'acme' (hyphen split + 'corp' business
+    // suffix stripped) — but there are no 'acme' invoices, so 'acme' is not a
+    // valid key. Migrating would resurrect the exclusion on a phantom brand.
+    const { canonicalSupplierKey } = await import("@/lib/supplier-canonical");
+    expect(canonicalSupplierKey({ company: "acme-corp" })).toBe("acme");
+
+    mocks.getSupplierKeyCounts.mockResolvedValue(new Map([["anthropic", 3]]));
+    mocks.supplierFindMany.mockResolvedValue([
+      supplierRow({ id: "sup_acme", name: "acme-corp", isRelevant: false }),
+    ]);
+
+    await reconcileSuppliers("org_1");
+
+    // Neither migrated nor deleted — the exclusion is kept dormant.
+    expect(mocks.supplierUpsert).not.toHaveBeenCalled();
+    expect(mocks.supplierDeleteMany).not.toHaveBeenCalled();
+  });
+
+  test("re-keying never overwrites an existing user preference at the target key (FIX)", async () => {
+    // 'bird rides' canonicalizes to 'bird', which IS valid (has invoices) —
+    // but the user set an explicit INCLUDE at 'bird'. Migrating the stale
+    // exclusion onto 'bird' would flip that include to excluded.
+    const { canonicalSupplierKey } = await import("@/lib/supplier-canonical");
+    expect(canonicalSupplierKey({ company: "bird rides" })).toBe("bird");
+
+    mocks.getSupplierKeyCounts.mockResolvedValue(new Map([["bird", 2]]));
+    mocks.supplierFindMany.mockResolvedValue([
+      supplierRow({ id: "sup_stale", name: "bird rides", isRelevant: false }),
+      supplierRow({ id: "sup_bird", name: "bird", isRelevant: true }),
+    ]);
+
+    await reconcileSuppliers("org_1");
+
+    // No upsert onto 'bird' — the user's include stays untouched — and the
+    // stale exclusion is kept dormant rather than deleted.
+    expect(mocks.supplierUpsert).not.toHaveBeenCalled();
+    expect(mocks.supplierDeleteMany).not.toHaveBeenCalled();
+  });
+
   test("preference-free stale rows are deleted without any upsert", async () => {
     mocks.getSupplierKeyCounts.mockResolvedValue(new Map([["apple", 5]]));
     mocks.supplierFindMany.mockResolvedValue([

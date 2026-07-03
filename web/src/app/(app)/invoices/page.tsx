@@ -147,6 +147,20 @@ export default async function InvoicesPage({
   // in the For Review view the exportable set is the review rows (M16).
   const facetCount = reportFacet === "EXCLUDED" ? reviewCount : includedCount;
 
+  // Word is gated separately (FIX 5). A filter-mode WORD export drops
+  // everything outside the confirmed/likely tier whitelist (EXPORT_TIERS in
+  // export-selection.ts), whereas CSV/ZIP keep the whole facet. The For
+  // Review facet (report=EXCLUDED) is mostly possible/other-tier rows, so a
+  // Word button gated on facetCount would enable then 400 "No invoices match".
+  // Count only the confirmed/likely rows in the CURRENT facet so an enabled
+  // Word button always has at least one exportable row.
+  const WORD_EXPORT_TIERS = new Set(["confirmed_invoice", "likely_invoice"]);
+  const wordExportableCount = visibleInvoices.filter(
+    (inv) =>
+      inv.reportStatus === reportFacet &&
+      WORD_EXPORT_TIERS.has(inv.classificationTier)
+  ).length;
+
   return (
     <InvoiceSelectionProvider visibleIds={serialized.map((inv) => inv.id)}>
       <div className="space-y-6">
@@ -167,7 +181,7 @@ export default async function InvoicesPage({
                 scanId: params.scan,
                 reportStatus: reportFacet,
               }}
-              disabled={facetCount === 0}
+              disabled={wordExportableCount === 0}
             />
           </div>
         </PageHeader>

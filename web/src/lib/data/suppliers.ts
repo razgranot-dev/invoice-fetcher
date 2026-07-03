@@ -67,12 +67,19 @@ export async function getSuppliers(organizationId: string): Promise<SupplierWith
  * a page-render read (M13).
  *
  * Preference-safe by construction:
- *   • A stale row holding a user exclusion (isRelevant=false) is RE-KEYED:
- *     the preference is upserted onto its current canonical key before the
- *     old row is deleted — so an alias-map change ("bird rides" → "bird")
- *     never silently drops the user's exclusion.
- *   • A stale excluded row that yields no usable new key is KEPT (dormant)
- *     rather than deleted — user exclusions are never destroyed.
+ *   • A stale row holding a user exclusion (isRelevant=false) is RE-KEYED
+ *     ONLY when doing so is provably safe: its canonical key must be a
+ *     currently-valid key (has invoices) AND no supplier row may already
+ *     exist at that key. canonicalSupplierKey is NOT inverse-safe — run on a
+ *     stored key it can map onto an UNRELATED brand ("acme-corp" → "acme") or
+ *     onto a key the user already set a preference for; migrating blindly
+ *     would resurrect the exclusion on the wrong vendor or overwrite an
+ *     existing include. When it IS safe, the preference is upserted onto the
+ *     new key before the old row is deleted (an alias-map change like
+ *     "bird rides" → "bird" keeps the exclusion).
+ *   • Any stale excluded row that can't be safely re-keyed is KEPT (dormant)
+ *     rather than deleted — user exclusions are never destroyed, never
+ *     migrated onto a wrong key, and never downgrade an existing preference.
  *   • Only stale rows carrying no preference (isRelevant=true, the default)
  *     are cleaned up.
  */
@@ -94,8 +101,20 @@ export async function reconcileSuppliers(organizationId: string): Promise<void> 
       continue;
     }
 
-    // Excluded supplier: carry the preference onto the re-keyed name first.
-    if (newKey && newKey !== s.name) {
+    // Excluded supplier: re-key the exclusion onto its current canonical key,
+    // but ONLY when that is provably safe. canonicalSupplierKey is NOT
+    // inverse-safe, so guard both directions:
+    //   • newKey must be a CURRENTLY-VALID key (present in validNames — i.e.
+    //     backed by real invoices right now); otherwise it's a phantom /
+    //     hyphen-collapsed brand ("acme-corp" → "acme" with no acme rows) and
+    //     migrating would resurrect the exclusion on the wrong vendor.
+    //   • no supplier row may ALREADY exist at newKey; otherwise the upsert
+    //     would overwrite/downgrade an existing user preference there (e.g.
+    //     flip a deliberate include at "bird" to excluded).
+    // Fail either guard → keep the stale excluded row DORMANT (do not migrate,
+    // do not delete): the exclusion is preserved, never destroyed.
+    const conflictAtNewKey = existing.some((e) => e.name === newKey);
+    if (newKey && newKey !== s.name && validNames.has(newKey) && !conflictAtNewKey) {
       await db.supplier.upsert({
         where: { organizationId_name: { organizationId, name: newKey } },
         create: { organizationId, name: newKey, isRelevant: false },
@@ -103,7 +122,7 @@ export async function reconcileSuppliers(organizationId: string): Promise<void> 
       });
       deletableIds.push(s.id);
     }
-    // else: exclusion that fails to re-key — keep it dormant, never delete.
+    // else: unsafe/absent re-key target — keep the stale exclusion dormant.
   }
 
   if (deletableIds.length > 0) {

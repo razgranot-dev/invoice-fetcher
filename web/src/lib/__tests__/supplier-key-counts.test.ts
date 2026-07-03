@@ -5,7 +5,9 @@
  *   • buckets empty/unresolvable identities under "unknown" (M12);
  *   • scopes the groupBy to the current view's scan/tier/report facets so
  *     chip counts match the visible list (M14);
- * plus the getInvoices company facet filtering by canonical supplierKey.
+ * plus the getInvoices company facet matching the persisted supplierKey
+ * DIRECTLY (never re-canonicalizing a stored key), and the suppliers PATCH
+ * cascade honouring row-level manual decisions.
  */
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
@@ -13,6 +15,11 @@ import { describe, test, expect, vi, beforeEach } from "vitest";
 const mocks = vi.hoisted(() => ({
   groupBy: vi.fn(),
   findMany: vi.fn(),
+  updateMany: vi.fn(),
+  auth: vi.fn(),
+  toggleSupplierRelevance: vi.fn(),
+  getSuppliers: vi.fn(),
+  revalidatePath: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -20,11 +27,22 @@ vi.mock("@/lib/db", () => ({
     invoice: {
       groupBy: mocks.groupBy,
       findMany: mocks.findMany,
+      updateMany: mocks.updateMany,
     },
   },
 }));
 
+// Suppliers PATCH-cascade (FIX) dependencies — mocked so the route handler
+// runs in isolation without a real DB / auth session / cache revalidation.
+vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
+vi.mock("@/lib/data/suppliers", () => ({
+  toggleSupplierRelevance: mocks.toggleSupplierRelevance,
+  getSuppliers: mocks.getSuppliers,
+}));
+vi.mock("next/cache", () => ({ revalidatePath: mocks.revalidatePath }));
+
 import { getSupplierKeyCounts, getInvoices } from "@/lib/data/invoices";
+import { PATCH } from "@/app/api/suppliers/route";
 
 beforeEach(() => {
   mocks.groupBy.mockReset();
@@ -131,5 +149,57 @@ describe("getInvoices company facet filters by canonical supplierKey (M14)", () 
   test("the unknown bucket is filterable too (M12)", async () => {
     await getInvoices("org_1", { company: "unknown" });
     expect(mocks.findMany.mock.calls[0][0].where.supplierKey).toBe("unknown");
+  });
+
+  test("domain-derived hyphenated keys are matched literally, never re-canonicalized (FIX)", async () => {
+    // The Companies dropdown passes the STORED canonical key as ?company=.
+    // canonicalSupplierKey is NOT a fixed point on such keys — re-running it
+    // collapses them, which is exactly the corruption the direct match avoids.
+    const { canonicalSupplierKey } = await import("@/lib/supplier-canonical");
+    expect(canonicalSupplierKey({ company: "my-shop" })).toBe("myshop");
+    expect(canonicalSupplierKey({ company: "acme-corp" })).toBe("acme");
+
+    await getInvoices("org_1", { company: "my-shop" });
+    await getInvoices("org_1", { company: "acme-corp" });
+
+    const [myShop, acme] = mocks.findMany.mock.calls.map((c) => c[0].where);
+    // Matched verbatim to its own rows — NOT collapsed to 'myshop'.
+    expect(myShop.supplierKey).toBe("my-shop");
+    // 'acme-corp' must NOT collapse onto the unrelated 'acme' vendor.
+    expect(acme.supplierKey).toBe("acme-corp");
+  });
+});
+
+describe("suppliers PATCH cascade honours row-level manual decisions (FIX)", () => {
+  beforeEach(() => {
+    mocks.auth.mockReset();
+    mocks.toggleSupplierRelevance.mockReset();
+    mocks.updateMany.mockReset();
+    mocks.revalidatePath.mockReset();
+    mocks.auth.mockResolvedValue({ user: { id: "u1" }, organizationId: "org_1" });
+    mocks.toggleSupplierRelevance.mockResolvedValue({
+      id: "s1",
+      name: "apple",
+      isRelevant: false,
+    });
+    mocks.updateMany.mockResolvedValue({ count: 0 });
+    // No legacy (null-supplierKey) rows — exercise the primary cascade path.
+    mocks.findMany.mockResolvedValue([]);
+  });
+
+  test("the brand-toggle updateMany is scoped with reportStatusManual:false so a manual row is untouched", async () => {
+    const req = { json: async () => ({ name: "apple", isRelevant: false }) } as any;
+    const res = await PATCH(req);
+    expect(res.status).toBe(200);
+
+    // The primary supplierKey cascade must carry the manual guard — matching
+    // the scan sweep in scans/route.ts ("row-level manual beats brand-level").
+    // Without it, toggling a supplier silently reverts a user's manual
+    // per-invoice include/exclude.
+    const primary = mocks.updateMany.mock.calls.find(
+      (c) => c[0]?.where?.supplierKey === "apple"
+    );
+    expect(primary).toBeDefined();
+    expect(primary![0].where.reportStatusManual).toBe(false);
   });
 });

@@ -228,6 +228,33 @@ def _disk_cache_sweep() -> None:
             continue
 
 
+def _cache_trim_locked(protect: str) -> None:
+    """Enforce the TTL/count/byte caps on the in-memory hot cache.
+
+    Must be called with _cache_lock held. Drops expired entries, then evicts
+    the oldest entries until both _CACHE_MAX_ENTRIES and _CACHE_MAX_BYTES are
+    satisfied — never evicting ``protect`` (the entry the caller just inserted
+    and still needs to serve). Shared by _cache_put AND _cache_get so a disk
+    hit that repopulates memory is bounded by the SAME caps as a fresh put
+    (otherwise a post-restart download burst grows _FILE_CACHE unbounded → OOM).
+
+    Evicts the oldest *non-protected* entry each pass (rather than breaking when
+    the overall-oldest is the protected one): on a disk repopulate the freshly
+    inserted entry carries its original — possibly oldest — created timestamp,
+    so a break-on-protected loop would stop without enforcing the caps.
+    """
+    _cache_cleanup()
+    while (
+        len(_FILE_CACHE) > _CACHE_MAX_ENTRIES
+        or _cache_total_bytes() > _CACHE_MAX_BYTES
+    ) and len(_FILE_CACHE) > 1:
+        evictable = [k for k in _FILE_CACHE if k != protect]
+        if not evictable:
+            break  # only the protected entry remains — we must keep it
+        oldest_key = min(evictable, key=lambda k: _FILE_CACHE[k]["created"])
+        del _FILE_CACHE[oldest_key]
+
+
 def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
     """Store a generated file (memory hot cache + disk persistence).
 
@@ -243,16 +270,7 @@ def _cache_put(job_id: str, data: bytes, metadata: dict | None = None):
             "created": time.time(),
             **meta,
         }
-        _cache_cleanup()
-        # Evict oldest entries if over count or size limits
-        while (
-            len(_FILE_CACHE) > _CACHE_MAX_ENTRIES
-            or _cache_total_bytes() > _CACHE_MAX_BYTES
-        ) and len(_FILE_CACHE) > 1:
-            oldest_key = min(_FILE_CACHE, key=lambda k: _FILE_CACHE[k]["created"])
-            if oldest_key == job_id:
-                break  # Don't evict the entry we just added
-            del _FILE_CACHE[oldest_key]
+        _cache_trim_locked(job_id)
     _disk_cache_put(job_id, data, meta)
     _disk_cache_sweep()
 
@@ -272,6 +290,11 @@ def _cache_get(job_id: str) -> dict | None:
     if entry:
         with _cache_lock:
             _FILE_CACHE.setdefault(job_id, entry)
+            # Enforce the SAME count/byte caps as _cache_put. A post-restart
+            # burst of downloads of many/large pending exports would otherwise
+            # repopulate _FILE_CACHE unbounded (setdefault bypasses eviction) →
+            # OOM. Protect job_id so the bytes we return stay served.
+            _cache_trim_locked(job_id)
     return entry
 
 
