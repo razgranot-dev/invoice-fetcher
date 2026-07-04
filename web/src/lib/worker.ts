@@ -76,6 +76,26 @@ export async function checkWorkerHealth(): Promise<{
   }
 }
 
+/**
+ * Keep-alive ping for the worker. The Render free tier spins the service down
+ * after ~15min of inactivity, so the first scan after idle hits a ~30-60s cold
+ * start (or times out). A cron hits this every few minutes to keep it warm.
+ * Unlike checkWorkerHealth()'s 3s probe, this uses a generous timeout so that
+ * if the worker HAS gone cold, the ping actually waits for it to wake.
+ */
+export async function keepWorkerWarm(): Promise<{ ok: boolean; status: number; error?: string }> {
+  try {
+    const res = await fetch(`${WORKER_URL}/health`, {
+      headers: workerHeaders(),
+      signal: AbortSignal.timeout(55_000),
+    });
+    return { ok: res.ok, status: res.status };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
+    return { ok: false, status: 0, error: msg };
+  }
+}
+
 /** Call the worker's emergency PayPal-only import. Returns funnel + invoices. */
 export async function dispatchPaypalImport(
   connection: { accessToken: string; refreshToken: string | null; tokenExpiry: Date | null },
