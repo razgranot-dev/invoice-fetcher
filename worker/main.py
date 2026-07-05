@@ -110,8 +110,10 @@ if not _WORKER_SECRET:
 
 @app.middleware("http")
 async def verify_worker_auth(request: Request, call_next):
-    # Health endpoint is exempt — used by load balancers / monitors
-    if request.url.path == "/health":
+    # Health + readiness endpoints are exempt — used by load balancers /
+    # monitors. Neither returns secrets: /health is a static liveness ping and
+    # /ready reports only booleans, a commit id, and error TYPE names.
+    if request.url.path in ("/health", "/ready"):
         return await call_next(request)
 
     if _WORKER_SECRET:
@@ -360,6 +362,69 @@ async def health():
         "version": WORKER_VERSION,
         "paypal_discovery_anchor": _PAYPAL_DISCOVERY_ANCHOR,
     }
+
+
+@app.get("/ready")
+async def ready():
+    """Deep readiness — proves the worker can actually START scan work, not just
+    answer a shallow liveness ping. A warm /health can coexist with a /scan that
+    hangs before its first byte (the exact failure this endpoint exists to
+    catch), because /health never exercises the scan path's dependencies.
+
+    Checks, both bounded so this endpoint itself can never hang:
+      (a) the scan pipeline imports and can build a query (in-process), and
+      (b) outbound TLS to Google's OAuth token host is reachable — this is the
+          dependency /scan's synchronous token refresh needs, and a blocked or
+          slow egress here is what stalls a scan before any progress is emitted.
+
+    Uses NO user tokens and returns NO secrets (booleans, a commit id, and
+    exception TYPE names only). Returns 200 when ready, 503 otherwise.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    checks: dict[str, Any] = {}
+    t0 = time.monotonic()
+
+    # (a) scan pipeline import + query build — cheap, proves the process can
+    #     construct the objects /scan needs.
+    try:
+        GmailConnector().build_query([], 30, False)
+        checks["scan_pipeline_importable"] = True
+    except Exception as e:  # pragma: no cover - defensive
+        checks["scan_pipeline_importable"] = False
+        checks["pipeline_error"] = type(e).__name__
+
+    # (b) bounded reachability probe to Google's OAuth token host. Connection +
+    #     TLS handshake only — no request body, no credentials.
+    def _probe_google_oauth() -> None:
+        import socket
+        import ssl
+
+        ctx = ssl.create_default_context()
+        with socket.create_connection(("oauth2.googleapis.com", 443), timeout=4) as sock:
+            with ctx.wrap_socket(sock, server_hostname="oauth2.googleapis.com"):
+                pass
+
+    try:
+        await asyncio.wait_for(run_in_threadpool(_probe_google_oauth), timeout=5)
+        checks["google_oauth_reachable"] = True
+    except Exception as e:
+        checks["google_oauth_reachable"] = False
+        checks["oauth_probe_error"] = type(e).__name__
+
+    ready_ok = (
+        checks.get("scan_pipeline_importable") is True
+        and checks.get("google_oauth_reachable") is True
+    )
+    return JSONResponse(
+        status_code=200 if ready_ok else 503,
+        content={
+            "ready": ready_ok,
+            "version": WORKER_VERSION,
+            "checks": checks,
+            "probe_ms": int((time.monotonic() - t0) * 1000),
+        },
+    )
 
 
 # ── PayPal discovery debug (real Gmail, no fixtures) ─────────────────────────
@@ -707,6 +772,14 @@ async def cancel_scan(scan_id: str):
 
 # ── Scan ─────────────────────────────────────────────────────────────────
 
+# Hard ceiling on the pre-stream Gmail auth/build step. Must stay well below the
+# web app's SCAN_DISPATCH_TIMEOUT_MS (270s) so a stalled OAuth refresh fails
+# FAST with a precise 503 here instead of hanging until the caller aborts with a
+# generic timeout. Worst-case legitimate cost is a token refresh (~seconds) plus
+# tokeninfo (10s) plus service build (30s); 45s leaves margin without masking a
+# real stall.
+AUTH_INIT_TIMEOUT_S = 45
+
 
 @app.post("/scan")
 async def run_scan(req: ScanRequest):
@@ -741,8 +814,48 @@ async def run_scan(req: ScanRequest):
         normalized = req.token_expiry.rstrip("Z").split(".")[0]
         creds_dict["expiry"] = normalized
 
+    from starlette.concurrency import run_in_threadpool
+
+    # Correlate this request across Vercel <-> worker logs. Prefer the caller's
+    # scan_id (already non-PII); fall back to a random id. Never logs tokens.
+    req_id = (req.scan_id or uuid.uuid4().hex)[:32]
+    t_recv = time.monotonic()
+    logger.info("[scan %s] /scan received — Gmail auth init starting", req_id)
+
+    # Gmail service construction (token refresh + tokeninfo + discovery build) is
+    # BLOCKING network I/O. Two problems it used to cause, both fixed here:
+    #   1. Called inline in this async endpoint, it blocked the event loop, so a
+    #      slow/stalled refresh froze /health and every other request until the
+    #      platform killed the instance. run_in_threadpool moves it off the loop.
+    #   2. google-auth's refresh can stall on blocked egress; with no ceiling the
+    #      request hung until the caller's 270s dispatch abort, reported to the
+    #      user as a generic "worker unavailable". asyncio.wait_for bounds it so
+    #      a stall fails FAST with a precise 503 the web maps to a clear message.
+    # This is the pre-first-byte step a shallow /health can never detect.
     connector = GmailConnector()
-    ok, result = connector.build_service_from_json(json.dumps(creds_dict))
+    try:
+        ok, result = await asyncio.wait_for(
+            run_in_threadpool(connector.build_service_from_json, json.dumps(creds_dict)),
+            timeout=AUTH_INIT_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "[scan %s] AUTH_INIT_TIMEOUT after %.1fs — Gmail service not built "
+            "(stalled OAuth refresh or blocked egress to Google)",
+            req_id, time.monotonic() - t_recv,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "AUTH_INIT_TIMEOUT: worker reached but could not initialize Gmail "
+                "access within {}s (stalled token refresh or blocked outbound to "
+                "Google).".format(AUTH_INIT_TIMEOUT_S)
+            ),
+        )
+    logger.info(
+        "[scan %s] Gmail auth init %s in %.2fs",
+        req_id, "ok" if ok else "FAILED", time.monotonic() - t_recv,
+    )
 
     if not ok:
         raise HTTPException(status_code=401, detail=f"Gmail auth failed: {result}")

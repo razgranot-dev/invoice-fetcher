@@ -95,6 +95,20 @@ describe("scan error sanitization", () => {
     expect(out.length).toBeLessThanOrEqual(300);
   });
 
+  test("maps worker AUTH_INIT_TIMEOUT (503) to a distinct Gmail-init-stalled message", () => {
+    // The worker fails fast with this when its pre-stream Gmail auth build
+    // stalls; the web receives it wrapped in the "Worker error 503" framing.
+    const raw =
+      'Worker error 503: {"detail":"AUTH_INIT_TIMEOUT: worker reached but could not initialize Gmail access within 45s (stalled token refresh or blocked outbound to Google)."}';
+    const out = sanitizeScanError(raw);
+    expect(out.toLowerCase()).toContain("initialize gmail access");
+    // Must NOT be misclassified as the generic "worker unavailable / 270s" case.
+    expect(out).not.toContain("270s");
+    // Must NOT be dressed up as a Gmail account auth failure (account is fine).
+    expect(out).not.toContain("Gmail authentication failed");
+    expect(out.length).toBeLessThanOrEqual(300);
+  });
+
   test("timeout rewrite does not swallow a genuine AUTH_ERROR that mentions timeout", () => {
     // AUTH_ERROR must win over the timeout branch — auth guidance is checked
     // first, so a revoked-token message keeps its reconnect instructions.

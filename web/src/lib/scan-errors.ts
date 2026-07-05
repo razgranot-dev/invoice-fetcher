@@ -38,6 +38,18 @@ export function sanitizeScanError(raw: string): string {
       "the worker may be down."
     );
   }
+  // Worker was reached and accepted the request, but its Gmail auth
+  // initialization (token refresh / service build) stalled and the worker
+  // aborted it fast (503 AUTH_INIT_TIMEOUT) instead of hanging. Distinct from
+  // "worker unavailable" above and from a genuine AUTH_ERROR — the account is
+  // fine; the worker just could not reach/refresh in time.
+  if (/AUTH_INIT_TIMEOUT/i.test(raw)) {
+    return (
+      "Scan worker was reached but could not initialize Gmail access in time " +
+      "(stalled token refresh or blocked connection to Google), so no emails " +
+      "were processed. Please retry; if it persists, the worker may need a restart."
+    );
+  }
   // Sanitize: strip internal paths, connection strings, and stack traces
   // before persisting — this message is returned to the client.
   return raw
