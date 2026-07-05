@@ -52,8 +52,21 @@ interface WorkerScanResult {
   error: string | null;
 }
 
+/**
+ * Distinct worker-health states so callers can tell WHY the worker is not
+ * usable, not just that it isn't:
+ *   • "healthy"     — /health answered 2xx.
+ *   • "unhealthy"   — /health answered, but non-2xx (process up, failing).
+ *   • "unreachable" — no HTTP response at all (probe timed out / connection
+ *                     refused). On Render's free tier this is almost always a
+ *                     spun-down cold instance, but also covers a hard-down or
+ *                     network-partitioned worker.
+ */
+export type WorkerHealthState = "healthy" | "unhealthy" | "unreachable";
+
 export async function checkWorkerHealth(): Promise<{
   ok: boolean;
+  state: WorkerHealthState;
   error?: string;
   version?: string;
   paypalDiscoveryAnchor?: boolean;
@@ -63,16 +76,21 @@ export async function checkWorkerHealth(): Promise<{
       headers: workerHeaders(),
       signal: AbortSignal.timeout(3000),
     });
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, state: "unhealthy", error: `HTTP ${res.status}` };
     const data = await res.json().catch(() => ({}));
     return {
       ok: true,
+      state: "healthy",
       version: data.version,
       paypalDiscoveryAnchor: data.paypal_discovery_anchor,
     };
   } catch (e: unknown) {
+    // fetch threw → never got an HTTP response. AbortSignal.timeout yields a
+    // TimeoutError; a refused/reset connection or DNS failure yields a
+    // TypeError. We cannot distinguish "waking" from "dead" without waiting,
+    // so report the honest ambiguous state rather than a bare "unavailable".
     const msg = e instanceof Error ? e.message : "Unknown error";
-    return { ok: false, error: msg };
+    return { ok: false, state: "unreachable", error: msg };
   }
 }
 
