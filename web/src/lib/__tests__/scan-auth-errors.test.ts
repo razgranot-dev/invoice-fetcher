@@ -80,6 +80,28 @@ describe("scan error sanitization", () => {
     expect(out).toContain("Gmail authentication failed");
     expect(out).toContain("Gmail permission missing");
   });
+
+  test("rewrites the dispatch-timeout abort into a precise diagnostic", () => {
+    // AbortSignal.timeout(SCAN_DISPATCH_TIMEOUT_MS) aborts the worker fetch
+    // with this exact DOMException message when the worker never responds
+    // (cold/unavailable Render worker). The opaque wording must be replaced.
+    const raw = "The operation was aborted due to timeout";
+    const out = sanitizeScanError(raw);
+    expect(out).not.toBe(raw);
+    expect(out.toLowerCase()).toContain("worker");
+    expect(out).toContain("270s");
+    expect(out.toLowerCase()).toContain("retry");
+    // Still safe + capped.
+    expect(out.length).toBeLessThanOrEqual(300);
+  });
+
+  test("timeout rewrite does not swallow a genuine AUTH_ERROR that mentions timeout", () => {
+    // AUTH_ERROR must win over the timeout branch — auth guidance is checked
+    // first, so a revoked-token message keeps its reconnect instructions.
+    const raw = "AUTH_ERROR: Token expired; the operation was aborted due to timeout";
+    const out = sanitizeScanError(raw);
+    expect(out).toContain("Gmail authentication failed");
+  });
 });
 
 /**
