@@ -160,6 +160,15 @@ which stage is broken:
 | `env.ok: false` | Missing env var — see the `vars` map | Set the missing var in Vercel / Render / `.env` |
 | `db.ok: false` | Neon DB unreachable, password rotated, or branch suspended | Verify `DATABASE_URL` in Vercel; wake the Neon branch |
 | `worker.ok: false` | Render service sleeping, env stale, or crashed | Check `https://<worker>.onrender.com/health`; review Render logs |
+
+> **Keep-warm (temporary fallback):** a GitHub Actions workflow
+> (`.github/workflows/invoice-fetcher-keep-warm.yml`) pings the public
+> `/api/cron/keep-warm` endpoint every ~5 min to reduce Render free-tier cold
+> sleep. This is a stop-gap — GitHub's scheduler can slip under load, so it is
+> not a guarantee. The **durable** fix is the async worker→Neon architecture
+> (`docs/plans/2026-07-05-async-scan-worker-neon.md`). Longer-term, a direct
+> external health monitor (e.g. UptimeRobot hitting the worker `/health`) or a
+> paid always-on Render service is preferable to this Actions cron.
 | `gmailConnection.hasGmailScope: false` | OAuth grant dropped `gmail.readonly` (most common) | **Reconnect — see step 3** |
 | `gmailConnection.hasRefreshToken: false` | Google didn't issue a refresh token | Revoke at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), then sign in again |
 

@@ -1,0 +1,42 @@
+name: invoice-fetcher-keep-warm
+
+# Temporary keep-warm fallback: pings the PUBLIC Vercel keep-warm endpoint on a
+# schedule so the free-tier Render worker is less likely to cold-sleep. This is
+# a stop-gap (GitHub's scheduler can slip under load); the durable fix is the
+# async worker->Neon architecture. See the note in README.md.
+
+on:
+  schedule:
+    # Every 5 minutes, offset off the top of the hour (minutes :03..:58) so the
+    # runs do not all land on the exact top-of-hour tick.
+    - cron: "3,8,13,18,23,28,33,38,43,48,53,58 * * * *"
+  workflow_dispatch:
+
+# Never let overlapping keep-warm runs pile up; do NOT cancel an in-flight run
+# (a ping in progress should finish, not be aborted by the next tick).
+concurrency:
+  group: invoice-fetcher-keep-warm
+  cancel-in-progress: false
+
+# Least privilege: the job only needs to make an outbound HTTP call.
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Vercel keep-warm endpoint
+        run: |
+          set -euo pipefail
+          # --fail makes any non-2xx status exit non-zero, so the step fails
+          # clearly (curl's --show-error message lands in the log). On 2xx the
+          # status code is captured and printed.
+          http_code=$(curl --fail --silent --show-error --max-time 60 \
+            --output response.json --write-out '%{http_code}' \
+            https://invoice-fetcher.vercel.app/api/cron/keep-warm)
+          echo "HTTP status: ${http_code}"
+          # Safe metadata only. This endpoint returns {pinged, worker, status,
+          # authEnforced} — no URLs, tokens, DB strings, or secrets. Print just
+          # the warmth-relevant fields.
+          echo "Keep-warm summary: $(jq -c '{pinged, worker, status}' response.json)"
