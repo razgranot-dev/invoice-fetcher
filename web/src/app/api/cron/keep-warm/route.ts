@@ -11,9 +11,9 @@ export const maxDuration = 60;
  * service is less likely to idle into a spin-down.
  *
  * IMPORTANT (platform limit): this project is on Vercel Hobby, which rejects
- * any cron that runs more than once per day — a sub-daily schedule (e.g.
- * `*/10 * * * *`) makes EVERY deploy fail validation. web/vercel.json is
- * therefore pinned to a daily schedule (`0 0 * * *`), which is only a
+ * any cron that runs more than once per day — a sub-daily schedule (e.g. one
+ * every 10 minutes) makes EVERY deploy fail validation. web/vercel.json is
+ * therefore pinned to a daily schedule ("0 0 * * *"), which is only a
  * best-effort safety net and does NOT keep the worker warm against Render's
  * ~15min sleep threshold. The real keep-warm is an EXTERNAL uptime monitor
  * (UptimeRobot / cron-job.org) pinging the worker's /health directly every
